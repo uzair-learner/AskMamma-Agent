@@ -11,11 +11,11 @@ from typing import Any
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
 
-import config
-from database import get_connection, initialize_database, rows_to_dicts, utc_now
+from core import config
+from db.database import get_connection, initialize_database, rows_to_dicts, utc_now
 
 
-DOCUMENTS_DIR = Path(__file__).with_name("documents")
+DOCUMENTS_DIR = Path(__file__).resolve().parents[1] / "documents"
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".csv"}
 
 

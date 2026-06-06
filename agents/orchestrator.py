@@ -9,9 +9,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from database import get_connection, initialize_database, list_products, rows_to_dicts, utc_now
-from rag import document_search
-from tools import (
+from db.database import get_connection, initialize_database, list_products, rows_to_dicts, utc_now
+from rag.retrieval import document_search
+from inventory.tools import (
     demand_forecast,
     inventory_status,
     product_search,

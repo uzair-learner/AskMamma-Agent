@@ -21,14 +21,14 @@ The core agent is tool-first and works without paid model keys. Ollama, OpenAI, 
 ## Folder Structure
 
 ```text
-app.py                    Streamlit dashboard/chat frontend
-backend.py                FastAPI backend
-agent.py                  Hierarchical multi-agent orchestration
-database.py               SQLite schema and CRUD helpers
-tools.py                  Typed inventory, forecast, report, movement, audit tools
-rag.py                    Document ingestion and local retrieval
-llm_provider.py           Ollama/OpenAI/Azure provider abstraction
-config.py                 Environment configuration
+api/backend.py            FastAPI backend
+ui/app.py                 Streamlit dashboard/chat frontend
+agents/orchestrator.py    Hierarchical multi-agent orchestration
+db/database.py            SQLite schema and CRUD helpers
+inventory/tools.py        Typed inventory, forecast, report, movement, audit tools
+rag/retrieval.py          Document ingestion and local retrieval
+core/llm_provider.py      Ollama/OpenAI/Azure provider abstraction
+core/config.py            Environment configuration
 scripts/seed_data.py      Demo data and document indexing
 scripts/evaluate_agent.py Route/tool evaluation
 tests/                    API, database, tools, RAG, memory, routing tests
@@ -73,7 +73,7 @@ To switch providers, set `LLM_PROVIDER=openai` with `OPENAI_API_KEY`, or `LLM_PR
 ## Run Backend
 
 ```powershell
-python -m uvicorn backend:app --host 127.0.0.1 --port 8000 --reload
+python -m uvicorn api.backend:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 Health check:
@@ -87,7 +87,7 @@ Invoke-RestMethod http://localhost:8000/health
 In another terminal:
 
 ```powershell
-python -m streamlit run app.py --server.port 8501
+python -m streamlit run ui/app.py --server.port 8501
 ```
 
 Open:
@@ -206,7 +206,7 @@ docker compose up
 
 ## Troubleshooting
 
-- Backend not reachable: start `uvicorn backend:app --port 8000`.
+- Backend not reachable: start `uvicorn api.backend:app --port 8000`.
 - Frontend error: confirm backend health at `http://localhost:8000/health`.
 - Empty products: run `python scripts/seed_data.py`.
 - Document search has no results: run `POST /documents/reindex`.

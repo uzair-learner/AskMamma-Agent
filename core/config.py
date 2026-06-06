@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-ROOT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = Path(__file__).resolve().parents[1]
 
 
 def env(name: str, default: str = "") -> str:

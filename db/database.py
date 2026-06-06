@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-ROOT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT_DIR / "inventory.db"
 
 
@@ -169,9 +169,14 @@ def initialize_database() -> None:
 
 
 def reset_database() -> None:
-    db_path = _db_path_from_env()
-    if db_path.exists():
-        db_path.unlink()
+    with get_connection() as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+        for row in rows:
+            connection.execute(f"DROP TABLE IF EXISTS {row['name']}")
+        connection.execute("PRAGMA foreign_keys = ON")
     initialize_database()
 
 

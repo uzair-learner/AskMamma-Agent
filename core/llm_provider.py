@@ -7,7 +7,7 @@ from typing import Protocol
 
 import requests
 
-import config
+from core import config
 
 
 class LLMProvider(Protocol):

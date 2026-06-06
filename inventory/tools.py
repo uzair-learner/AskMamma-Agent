@@ -10,8 +10,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-import config
-from database import (
+from core import config
+from db.database import (
     find_product,
     get_connection,
     get_product,

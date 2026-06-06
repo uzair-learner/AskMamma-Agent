@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from agent import invoke_agent  # noqa: E402
+from agents.orchestrator import invoke_agent  # noqa: E402
 from scripts.seed_data import seed  # noqa: E402
 
 

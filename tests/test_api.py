@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from backend import app
+from api.backend import app
 from scripts.seed_data import seed
 
 

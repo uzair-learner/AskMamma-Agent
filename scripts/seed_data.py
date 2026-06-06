@@ -11,8 +11,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from database import get_connection, reset_database, utc_now  # noqa: E402
-from rag import reindex_documents  # noqa: E402
+from db.database import get_connection, reset_database, utc_now  # noqa: E402
+from rag.retrieval import reindex_documents  # noqa: E402
 
 
 SUPPLIERS = [
