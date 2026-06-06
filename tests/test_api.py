@@ -18,7 +18,7 @@ def test_health_endpoint():
 
 
 def test_low_stock_endpoint():
-    response = client.get("/inventory/low-stock")
+    response = client.get("/availability/low")
     assert response.status_code == 200
     assert isinstance(response.json(), list)
     assert response.json()
@@ -27,7 +27,7 @@ def test_low_stock_endpoint():
 def test_agent_card_endpoint():
     response = client.get("/.well-known/agent-card.json")
     assert response.status_code == 200
-    assert "inventory_lookup" in response.json()["skills"]
+    assert "askmamma_lookup" in response.json()["skills"]
 
 
 def test_tool_registry_endpoint():
@@ -40,4 +40,4 @@ def test_tool_registry_endpoint():
 def test_chat_endpoint():
     response = client.post("/agent/chat", json={"message": "Which products are low in stock?", "session_id": "api-test"})
     assert response.status_code == 200
-    assert "InventoryStatusTool" in response.json()["tools_called"]
+    assert "AvailabilityStatusTool" in response.json()["tools_called"]

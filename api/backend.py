@@ -1,4 +1,4 @@
-"""FastAPI backend for the inventory management agent system."""
+"""FastAPI backend for the AskMamma agent system."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from db.database import (
     update_product,
 )
 from rag.retrieval import document_search, reindex_documents, save_uploaded_document
-from inventory.tools import (
+from askmamma.tools import (
     add_inventory_movement,
     demand_forecast,
     reorder_recommendations,
@@ -31,7 +31,7 @@ from inventory.tools import (
 )
 
 
-app = FastAPI(title="AskMamma Inventory Agent API", version="1.0.0")
+app = FastAPI(title="AskMamma Agent API", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.CORS_ORIGINS,
@@ -138,13 +138,28 @@ def inventory_low_stock() -> list[dict[str, Any]]:
     return low_stock_products()
 
 
+@app.get("/availability/low")
+def availability_low() -> list[dict[str, Any]]:
+    return low_stock_products()
+
+
 @app.get("/inventory/out-of-stock")
 def inventory_out_of_stock() -> list[dict[str, Any]]:
     return out_of_stock_products()
 
 
+@app.get("/availability/out")
+def availability_out() -> list[dict[str, Any]]:
+    return out_of_stock_products()
+
+
 @app.post("/inventory/restock")
 def inventory_restock(payload: RestockPayload) -> dict[str, Any]:
+    return add_inventory_movement(payload.product_id, "stock_in", payload.quantity, payload.reason)
+
+
+@app.post("/availability/restock")
+def availability_restock(payload: RestockPayload) -> dict[str, Any]:
     return add_inventory_movement(payload.product_id, "stock_in", payload.quantity, payload.reason)
 
 
@@ -216,6 +231,11 @@ def reports_inventory() -> dict[str, Any]:
     return write_inventory_report()
 
 
+@app.get("/reports/askmamma")
+def reports_askmamma() -> dict[str, Any]:
+    return write_inventory_report("AskMamma Operations Report")
+
+
 @app.get("/reports/forecast")
 def reports_forecast() -> dict[str, Any]:
     return demand_forecast(months=6)
@@ -224,15 +244,15 @@ def reports_forecast() -> dict[str, Any]:
 @app.get("/.well-known/agent-card.json")
 def agent_card() -> dict[str, Any]:
     return {
-        "name": "AskMamma Inventory Assistant",
-        "description": "AI-powered inventory management agent with tools, memory, RAG, forecasting, reports, and traces.",
+        "name": "AskMamma Assistant",
+        "description": "AI-powered AskMamma agent with tools, memory, RAG, forecasting, reports, and traces.",
         "version": "1.0.0",
         "endpoint": "/agent/chat",
         "supported_input_modes": ["text", "task"],
         "supported_output_modes": ["text", "json", "markdown"],
         "authentication": "none for local development",
         "skills": [
-            "inventory_lookup",
+            "askmamma_lookup",
             "low_stock_analysis",
             "demand_forecast",
             "document_search",

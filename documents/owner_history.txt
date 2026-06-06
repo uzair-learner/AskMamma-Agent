@@ -1,7 +1,7 @@
 AskMamma Owner History
 
-AskMamma was founded by Marta Bellini, a second-generation restaurateur from Emilia-Romagna. Marta learned piadina preparation from her family bakery before opening a small digital-first piadineria focused on fresh fillings, transparent sourcing, and quick delivery.
+AskMamma was created as a local-first agent application for demonstrating practical AI assistant workflows with tools, memory, document retrieval, tracing, and evaluation.
 
-The restaurant name comes from regular customers asking Marta for recommendations by saying, "Ask mamma what goes best today." The phrase became the brand name when the restaurant expanded its online ordering service.
+The name comes from the idea of asking a helpful assistant for grounded answers instead of guessing. The project focuses on clear setup, reproducible local data, and testable agent behavior.
 
-Marta continues to lead supplier selection and menu quality checks.
+AskMamma continues to evolve around modular backend APIs, a simple UI, seed scripts, and reliable tests.

@@ -1,5 +1,5 @@
 from scripts.seed_data import seed
-from inventory.tools import demand_forecast, inventory_status, product_search, supplier_lookup
+from askmamma.tools import demand_forecast, inventory_status, product_search, supplier_lookup
 
 
 def setup_module():

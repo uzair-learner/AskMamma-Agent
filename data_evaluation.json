@@ -8,14 +8,14 @@
   {
     "question": "Which products are low in stock?",
     "expected_answer_summary": "list low-stock products",
-    "expected_tools": ["InventoryStatusTool"],
-    "expected_agent_route": "InventoryAgent"
+    "expected_tools": ["AvailabilityStatusTool"],
+    "expected_agent_route": "AskMammaActionAgent"
   },
   {
     "question": "Which supplier provides USB-C Cable 2m?",
     "expected_answer_summary": "supplier name and lead time",
     "expected_tools": ["SupplierLookupTool"],
-    "expected_agent_route": "InventoryAgent"
+    "expected_agent_route": "AskMammaActionAgent"
   },
   {
     "question": "Based on previous sales, what demand do you expect next month for Packing Tape?",
@@ -30,7 +30,7 @@
     "expected_agent_route": "DocumentAgent"
   },
   {
-    "question": "Generate a short inventory report.",
+    "question": "Generate a short AskMamma report.",
     "expected_answer_summary": "saved report path",
     "expected_tools": ["ReportWriterTool"],
     "expected_agent_route": "ReportAgent"
@@ -39,6 +39,6 @@
     "question": "What about its supplier?",
     "expected_answer_summary": "uses prior product context when available",
     "expected_tools": ["SupplierLookupTool"],
-    "expected_agent_route": "InventoryAgent"
+    "expected_agent_route": "AskMammaActionAgent"
   }
 ]

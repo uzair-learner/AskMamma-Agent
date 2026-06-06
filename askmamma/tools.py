@@ -1,4 +1,4 @@
-"""Typed tool functions used by the inventory agents and exposed through APIs."""
+"""Typed tool functions used by AskMamma agents and exposed through APIs."""
 
 from __future__ import annotations
 
@@ -32,14 +32,14 @@ class ToolCall(BaseModel):
 
 def tool_registry() -> list[ToolCall]:
     return [
-        ToolCall(name="ProductSearchTool", description="Search products by name, SKU, category, supplier, or description.", input_schema={"query": "string"}),
-        ToolCall(name="InventoryStatusTool", description="Return stock quantity, reorder level, low-stock status, and out-of-stock status.", input_schema={"identifier": "string optional"}),
+        ToolCall(name="ProductSearchTool", description="Search AskMamma demo items by name, SKU, category, supplier, or description.", input_schema={"query": "string"}),
+        ToolCall(name="AvailabilityStatusTool", description="Return quantity, threshold, low-availability status, and unavailable status.", input_schema={"identifier": "string optional"}),
         ToolCall(name="SupplierLookupTool", description="Find supplier information for a product.", input_schema={"identifier": "string"}),
         ToolCall(name="SalesHistoryTool", description="Retrieve previous sales for a product or category.", input_schema={"identifier": "string optional", "months": "integer"}),
         ToolCall(name="DemandForecastTool", description="Predict future demand using moving average and trend adjustment.", input_schema={"identifier": "string optional", "months": "integer"}),
         ToolCall(name="ReorderRecommendationTool", description="Recommend reorder quantities from stock, reorder levels, sales, and lead time.", input_schema={"identifier": "string optional"}),
         ToolCall(name="DocumentSearchTool", description="Search indexed documents using local RAG retrieval.", input_schema={"query": "string"}),
-        ToolCall(name="ReportWriterTool", description="Generate inventory report and save it under outputs/reports.", input_schema={"title": "string optional"}),
+        ToolCall(name="ReportWriterTool", description="Generate an AskMamma operations report and save it under outputs/reports.", input_schema={"title": "string optional"}),
         ToolCall(name="AddInventoryMovementTool", description="Record stock-in, stock-out, or adjustment movement.", input_schema={"product_id": "integer", "movement_type": "string", "quantity": "integer", "reason": "string"}),
         ToolCall(name="AuditLogTool", description="Save agent actions and tool calls.", input_schema={"session_id": "string", "message": "string"}),
     ]
@@ -204,13 +204,13 @@ def add_inventory_movement(product_id: int, movement_type: str, quantity: int, r
     return {"product": get_product(product_id), "movement_type": movement_type, "quantity": quantity}
 
 
-def write_inventory_report(title: str = "Inventory Report") -> dict[str, Any]:
+def write_inventory_report(title: str = "AskMamma Operations Report") -> dict[str, Any]:
     config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
     low = low_stock_products()
     out = out_of_stock_products()
     recs = reorder_recommendations()
     forecast = demand_forecast(months=6)
-    file_name = f"inventory-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+    file_name = f"askmamma-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
     path = config.REPORT_DIR / file_name
     lines = [
         f"# {title}",

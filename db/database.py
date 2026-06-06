@@ -1,4 +1,4 @@
-"""SQLite data layer for the inventory management agent system."""
+"""SQLite data layer for the AskMamma agent system."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-DB_PATH = ROOT_DIR / "inventory.db"
+DB_PATH = ROOT_DIR / "askmamma.db"
 
 
 def _db_path_from_env() -> Path:
@@ -48,7 +48,7 @@ def rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
 
 
 def initialize_database() -> None:
-    """Create inventory, memory, tracing, and document tables."""
+    """Create AskMamma demo data, memory, tracing, and document tables."""
 
     with get_connection() as connection:
         connection.executescript(

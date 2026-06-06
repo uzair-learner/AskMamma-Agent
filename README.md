@@ -1,6 +1,6 @@
-# AskMamma Inventory Agent System
+# AskMamma Agent System
 
-AskMamma is a local-first AI-powered inventory management agent system. It supports natural-language stock questions, product lookup, supplier lookup, low-stock alerts, demand forecasting, document Q&A, report generation, memory, tracing, evaluation, and lightweight MCP/A2A-style discovery endpoints.
+AskMamma-Agent is a local AI agent application with a FastAPI backend, Streamlit UI, LLM provider integration, RAG/document retrieval, tools/actions, tests, scripts, and environment-based configuration. The included seeded data demonstrates AskMamma tool use with sample products, availability checks, suppliers, forecasting, document Q&A, reports, memory, tracing, evaluation, and lightweight MCP/A2A-style discovery endpoints.
 
 ## Architecture
 
@@ -8,7 +8,7 @@ AskMamma is a local-first AI-powered inventory management agent system. It suppo
 Streamlit UI
   -> FastAPI backend
     -> SupervisorAgent
-      -> InventoryAgent -> inventory tools -> SQLite
+      -> AskMammaActionAgent -> AskMamma tools -> SQLite
       -> ForecastAgent -> sales + forecast tools -> SQLite
       -> DocumentAgent -> local RAG search -> document_chunks
       -> ReportAgent -> markdown reports -> outputs/reports
@@ -25,7 +25,7 @@ api/backend.py            FastAPI backend
 ui/app.py                 Streamlit dashboard/chat frontend
 agents/orchestrator.py    Hierarchical multi-agent orchestration
 db/database.py            SQLite schema and CRUD helpers
-inventory/tools.py        Typed inventory, forecast, report, movement, audit tools
+askmamma/tools.py         Typed AskMamma demo tools, forecast, report, movement, audit tools
 rag/retrieval.py          Document ingestion and local retrieval
 core/llm_provider.py      Ollama/OpenAI/Azure provider abstraction
 core/config.py            Environment configuration
@@ -50,6 +50,8 @@ Seed the local database and index sample documents:
 ```powershell
 python scripts/seed_data.py
 ```
+
+The seed script creates a reproducible local demo database with 12 suppliers, a broad AskMamma sample catalog, 18 months of sales history, movement records, and indexed knowledge-base documents. The generated SQLite file is runtime data and is intentionally ignored by Git.
 
 ## Run Ollama
 
@@ -111,9 +113,9 @@ powershell -ExecutionPolicy Bypass -File scripts/start_all.ps1
 - `POST /products`
 - `PUT /products/{id}`
 - `DELETE /products/{id}?confirm=true`
-- `GET /inventory/low-stock`
-- `GET /inventory/out-of-stock`
-- `POST /inventory/restock`
+- `GET /availability/low`
+- `GET /availability/out`
+- `POST /availability/restock`
 - `POST /forecast/demand`
 - `POST /agent/chat`
 - `POST /agent/run-task`
@@ -122,7 +124,7 @@ powershell -ExecutionPolicy Bypass -File scripts/start_all.ps1
 - `POST /documents/upload`
 - `POST /documents/reindex`
 - `POST /documents/search`
-- `GET /reports/inventory`
+- `GET /reports/askmamma`
 - `GET /reports/forecast`
 - `GET /.well-known/agent-card.json`
 - `GET /agent/tools`
@@ -140,7 +142,7 @@ Do we have USB-C Cable 2m available?
 Which supplier provides that item?
 Based on previous sales, what demand do you expect next month for Packing Tape?
 Search uploaded documents and tell me the return policy.
-Generate a short inventory report.
+Generate a short AskMamma report.
 ```
 
 ## Documents

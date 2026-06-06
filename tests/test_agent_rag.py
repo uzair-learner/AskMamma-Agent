@@ -13,10 +13,10 @@ def test_greeting_uses_no_tools():
     assert result["tools_called"] == []
 
 
-def test_low_stock_routes_to_inventory_tool():
+def test_low_stock_routes_to_action_tool():
     result = invoke_agent("Which products are low in stock?", session_id="test-low-stock")
-    assert result["selected_agent"] == "InventoryAgent"
-    assert "InventoryStatusTool" in result["tools_called"]
+    assert result["selected_agent"] == "AskMammaActionAgent"
+    assert "AvailabilityStatusTool" in result["tools_called"]
 
 
 def test_document_search_finds_return_policy():

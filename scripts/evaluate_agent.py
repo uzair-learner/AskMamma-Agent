@@ -1,4 +1,4 @@
-"""Run lightweight route/tool evaluation for the inventory agent."""
+"""Run lightweight route/tool evaluation for the AskMamma agent."""
 
 from __future__ import annotations
 

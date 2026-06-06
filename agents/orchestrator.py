@@ -1,4 +1,4 @@
-"""Hierarchical inventory agent orchestration with memory and tracing."""
+"""Hierarchical AskMamma agent orchestration with memory and tracing."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any
 
 from db.database import get_connection, initialize_database, list_products, rows_to_dicts, utc_now
 from rag.retrieval import document_search
-from inventory.tools import (
+from askmamma.tools import (
     demand_forecast,
     inventory_status,
     product_search,
@@ -24,9 +24,9 @@ from inventory.tools import (
 
 
 SYSTEM_PROMPT = """
-You are AskMamma Inventory Assistant, a tool-using AI agent for inventory management.
+You are AskMamma Assistant, a tool-using AI agent for AskMamma demo operations.
 Never invent product data, stock levels, supplier details, or forecast numbers.
-Use tools for inventory, supplier, sales, forecast, document, and report answers.
+Use tools for availability, supplier, sales, forecast, document, and report answers.
 If sales history is insufficient, say so and provide a conservative fallback.
 Confirm before destructive actions such as deleting products or major stock adjustments.
 Do not reveal secrets or environment variables.
@@ -59,6 +59,30 @@ def get_session_messages(session_id: str, limit: int = 20) -> list[dict[str, Any
             (session_id, limit),
         ).fetchall()
     return list(reversed(rows_to_dicts(rows)))
+
+
+def remember_session_value(session_id: str, key: str, value: str) -> None:
+    initialize_database()
+    memory_key = f"session:{session_id}:{key}"
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO long_term_memory (memory_key, memory_value, created_at, updated_at)
+            VALUES (?, ?, COALESCE((SELECT created_at FROM long_term_memory WHERE memory_key = ?), ?), ?)
+            """,
+            (memory_key, value, memory_key, utc_now(), utc_now()),
+        )
+
+
+def recall_session_value(session_id: str, key: str) -> str | None:
+    initialize_database()
+    memory_key = f"session:{session_id}:{key}"
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT memory_value FROM long_term_memory WHERE memory_key = ?",
+            (memory_key,),
+        ).fetchone()
+    return row["memory_value"] if row else None
 
 
 def get_recent_traces(limit: int = 50) -> list[dict[str, Any]]:
@@ -129,6 +153,9 @@ def _extract_identifier(message: str, session_id: str) -> str | None:
         match = re.search(r"(?:SKU\s+)?([A-Z]{2,}-\d{3})", content)
         if match:
             return match.group(1)
+    remembered = recall_session_value(session_id, "last_sku")
+    if remembered:
+        return remembered
     return None
 
 
@@ -141,8 +168,8 @@ class AgentResult:
     tool_outputs: list[Any] = field(default_factory=list)
 
 
-class InventoryAgent:
-    name = "InventoryAgent"
+class AskMammaActionAgent:
+    name = "AskMammaActionAgent"
 
     def run(self, message: str, session_id: str) -> AgentResult:
         lowered = message.lower()
@@ -152,6 +179,9 @@ class InventoryAgent:
             if not result.get("found"):
                 answer = result["message"]
             else:
+                product = inventory_status(identifier).get("product")
+                if product:
+                    remember_session_value(session_id, "last_sku", product["sku"])
                 supplier = result["supplier"]
                 answer = (
                     f"**{result['product']}** is supplied by {supplier['name']} "
@@ -169,7 +199,7 @@ class InventoryAgent:
                     f"- {p['sku']} **{p['name']}**: {p['stock_quantity']} on hand, reorder level {p['reorder_level']}"
                     for p in low
                 )
-            return AgentResult(answer, self.name, ["InventoryStatusTool"], [{"identifier": None}], [result])
+            return AgentResult(answer, self.name, ["AvailabilityStatusTool"], [{"identifier": None}], [result])
 
         if "out" in lowered and "stock" in lowered:
             result = inventory_status()
@@ -177,7 +207,7 @@ class InventoryAgent:
             answer = "Out-of-stock products:\n" + "\n".join(
                 f"- {p['sku']} **{p['name']}**" for p in out
             ) if out else "No products are out of stock."
-            return AgentResult(answer, self.name, ["InventoryStatusTool"], [{"identifier": None}], [result])
+            return AgentResult(answer, self.name, ["AvailabilityStatusTool"], [{"identifier": None}], [result])
 
         if identifier:
             result = inventory_status(identifier)
@@ -186,15 +216,16 @@ class InventoryAgent:
                 answer = "No exact stock match found. Similar products:\n" + "\n".join(
                     f"- {p['sku']} **{p['name']}** ({p['stock_quantity']} on hand)" for p in search[:5]
                 )
-                return AgentResult(answer, self.name, ["InventoryStatusTool", "ProductSearchTool"], [{"identifier": identifier}, {"query": identifier}], [result, search])
+                return AgentResult(answer, self.name, ["AvailabilityStatusTool", "ProductSearchTool"], [{"identifier": identifier}, {"query": identifier}], [result, search])
             product = result["product"]
+            remember_session_value(session_id, "last_sku", product["sku"])
             answer = (
                 f"**{product['name']}** ({product['sku']}) has {product['stock_quantity']} units on hand. "
                 f"Reorder level: {product['reorder_level']}. Price: ${product['price']:.2f}. "
                 f"Supplier: {product.get('supplier_name')}. "
                 f"Status: {'out of stock' if result['out_of_stock'] else 'low stock' if result['low_stock'] else 'in stock'}."
             )
-            return AgentResult(answer, self.name, ["InventoryStatusTool"], [{"identifier": identifier}], [result])
+            return AgentResult(answer, self.name, ["AvailabilityStatusTool"], [{"identifier": identifier}], [result])
 
         result = product_search(message)
         answer = "Matching products:\n" + "\n".join(
@@ -210,6 +241,8 @@ class ForecastAgent:
         identifier = _extract_identifier(message, session_id)
         history = sales_history(identifier, months=6)
         forecast = demand_forecast(identifier, months=6)
+        if history.get("product"):
+            remember_session_value(session_id, "last_sku", history["product"]["sku"])
         if not forecast.get("found"):
             answer = forecast["message"]
         else:
@@ -246,14 +279,14 @@ class ReportAgent:
     name = "ReportAgent"
 
     def run(self, message: str, session_id: str) -> AgentResult:
-        report = write_inventory_report("Inventory Management Report")
+        report = write_inventory_report("AskMamma Operations Report")
         recs = reorder_recommendations()
         answer = f"{report['summary']}. It includes {len(recs)} reorder recommendations."
         return AgentResult(
             answer,
             self.name,
             ["ReportWriterTool", "ReorderRecommendationTool"],
-            [{"title": "Inventory Management Report"}, {"identifier": None}],
+            [{"title": "AskMamma Operations Report"}, {"identifier": None}],
             [report, recs],
         )
 
@@ -276,7 +309,7 @@ class SupervisorAgent:
     name = "SupervisorAgent"
 
     def __init__(self) -> None:
-        self.inventory_agent = InventoryAgent()
+        self.action_agent = AskMammaActionAgent()
         self.forecast_agent = ForecastAgent()
         self.document_agent = DocumentAgent()
         self.report_agent = ReportAgent()
@@ -293,14 +326,14 @@ class SupervisorAgent:
         if any(word in lowered for word in ["report", "summary"]):
             return "report"
         if any(word in lowered for word in ["reorder", "restock", "stockout", "supplier", "stock", "available", "product", "sku"]):
-            return "inventory"
-        return "inventory"
+            return "actions"
+        return "actions"
 
     def run(self, message: str, session_id: str) -> AgentResult:
         route = self.route(message)
         if route == "greeting":
             return AgentResult(
-                "Hello. I can help with stock checks, suppliers, low-stock analysis, demand forecasts, reports, and document search.",
+                "Hello. I can help with AskMamma demo availability checks, suppliers, forecasts, reports, and document search.",
                 self.name,
             )
         if route == "document":
@@ -312,7 +345,7 @@ class SupervisorAgent:
             result = self.report_agent.run(message, session_id)
             result = self.quality_agent.run(result)
         else:
-            result = self.inventory_agent.run(message, session_id)
+            result = self.action_agent.run(message, session_id)
         return result
 
 

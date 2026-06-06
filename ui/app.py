@@ -1,4 +1,4 @@
-"""Streamlit frontend for the inventory management agent system."""
+"""Streamlit frontend for the AskMamma agent system."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ import streamlit as st
 
 API_BASE_URL = "http://localhost:8000"
 
-st.set_page_config(page_title="AskMamma Inventory", layout="wide")
-st.title("AskMamma Inventory Assistant")
+st.set_page_config(page_title="AskMamma Agent", layout="wide")
+st.title("AskMamma Assistant")
 
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
@@ -51,10 +51,10 @@ with left:
     st.subheader("Products")
     search = st.text_input("Search products", "")
     button_cols = st.columns(5)
-    if button_cols[0].button("Refresh inventory"):
+    if button_cols[0].button("Refresh data"):
         st.rerun()
-    if button_cols[1].button("Generate stock report"):
-        report = api_get("/reports/inventory")
+    if button_cols[1].button("Generate report"):
+        report = api_get("/reports/askmamma")
         st.success(report["summary"])
     if button_cols[2].button("Run demand forecast"):
         forecast = api_post("/forecast/demand", {"months": 6})

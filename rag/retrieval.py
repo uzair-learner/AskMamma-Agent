@@ -1,4 +1,4 @@
-"""Local document ingestion and retrieval for inventory knowledge base."""
+"""Local document ingestion and retrieval for the AskMamma knowledge base."""
 
 from __future__ import annotations
 

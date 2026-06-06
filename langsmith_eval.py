@@ -1,7 +1,7 @@
 """Compatibility entrypoint for running the local agent evaluation.
 
 LangSmith tracing can be enabled through `.env`, but the canonical evaluation
-script for this inventory system is `scripts/evaluate_agent.py`.
+script for this AskMamma system is `scripts/evaluate_agent.py`.
 """
 
 from __future__ import annotations

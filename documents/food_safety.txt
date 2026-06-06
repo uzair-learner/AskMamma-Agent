@@ -1,7 +1,7 @@
-AskMamma Piadineria Food Safety Records
+AskMamma Operational Safety Records
 
-AskMamma holds a current HACCP food safety certificate for preparation, storage, and service of piadina ingredients. The certificate covers chilled dairy handling, cured meat storage, allergen separation, daily surface sanitation, and temperature logging.
+AskMamma keeps operational safety records for handling sample catalog data, uploaded documents, and generated reports. The records describe review practices for document ingestion, report storage, and local runtime data handling.
 
-The restaurant team completed local food safety training with the municipal hospitality office. The training covered safe receiving procedures, hand-washing controls, cross-contamination prevention, and documented closing checks.
+The project team completed local data handling training for safe uploads, source attribution, and avoiding accidental exposure of secrets from environment files.
 
-AskMamma keeps weekly internal audit notes for refrigerator temperature checks, supplier delivery review, and allergen labeling accuracy.
+AskMamma keeps internal audit notes for test runs, trace review, document search quality, and generated report cleanup.

@@ -1,7 +1,7 @@
-AskMamma Restaurant Awards
+AskMamma Project Notes
 
-AskMamma received the Local Fresh Kitchen Award for its use of regional vegetables and transparent supplier records.
+AskMamma includes a FastAPI backend, Streamlit UI, SQLite data layer, document retrieval, local tracing, and evaluation scripts.
 
-The restaurant was also recognized by the Digital Hospitality Guild for its accessible online ordering experience and clear allergen communication.
+The project emphasizes local development, source-controlled configuration examples, and generated runtime files that stay out of Git.
 
-Its Classic Piadina with stracchino and grilled vegetables was shortlisted for the Neighborhood Comfort Food Prize.
+Its demo data is intentionally seeded by scripts so contributors can recreate the local database without committing runtime database files.
