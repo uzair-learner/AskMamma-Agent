@@ -1,0 +1,44 @@
+[
+  {
+    "question": "Hi",
+    "expected_answer_summary": "friendly greeting",
+    "expected_tools": [],
+    "expected_agent_route": "SupervisorAgent"
+  },
+  {
+    "question": "Which products are low in stock?",
+    "expected_answer_summary": "list low-stock products",
+    "expected_tools": ["InventoryStatusTool"],
+    "expected_agent_route": "InventoryAgent"
+  },
+  {
+    "question": "Which supplier provides USB-C Cable 2m?",
+    "expected_answer_summary": "supplier name and lead time",
+    "expected_tools": ["SupplierLookupTool"],
+    "expected_agent_route": "InventoryAgent"
+  },
+  {
+    "question": "Based on previous sales, what demand do you expect next month for Packing Tape?",
+    "expected_answer_summary": "numeric forecast with explanation",
+    "expected_tools": ["SalesHistoryTool", "DemandForecastTool"],
+    "expected_agent_route": "ForecastAgent"
+  },
+  {
+    "question": "Search uploaded documents and tell me the return policy.",
+    "expected_answer_summary": "return policy with source",
+    "expected_tools": ["DocumentSearchTool"],
+    "expected_agent_route": "DocumentAgent"
+  },
+  {
+    "question": "Generate a short inventory report.",
+    "expected_answer_summary": "saved report path",
+    "expected_tools": ["ReportWriterTool"],
+    "expected_agent_route": "ReportAgent"
+  },
+  {
+    "question": "What about its supplier?",
+    "expected_answer_summary": "uses prior product context when available",
+    "expected_tools": ["SupplierLookupTool"],
+    "expected_agent_route": "InventoryAgent"
+  }
+]

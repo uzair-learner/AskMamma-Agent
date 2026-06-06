@@ -1,0 +1,19 @@
+services:
+  backend:
+    image: python:3.13-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    command: sh -c "pip install -r requirements.txt && python scripts/seed_data.py && uvicorn backend:app --host 0.0.0.0 --port 8000"
+  frontend:
+    image: python:3.13-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend
+    command: sh -c "pip install -r requirements.txt && streamlit run app.py --server.address 0.0.0.0 --server.port 8501"
