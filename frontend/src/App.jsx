@@ -100,6 +100,7 @@ export default function App() {
   const [recommendations, setRecommendations] = useState([]);
   const [reports, setReports] = useState([]);
   const [diagnostics, setDiagnostics] = useState(null);
+  const [pageInsight, setPageInsight] = useState(null);
   const [selectedProductId, setSelectedProductId] = useState(null);
   const [productQuery, setProductQuery] = useState("");
   const [chatInput, setChatInput] = useState("");
@@ -162,6 +163,49 @@ export default function App() {
   useEffect(() => {
     loadAllData().catch((loadError) => setError(loadError.message));
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const path = insightPath(routeState, selectedProductId);
+    if (!path) {
+      setPageInsight(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    request(path)
+      .then((insight) => {
+        if (!cancelled) {
+          startTransition(() => setPageInsight(insight));
+        }
+      })
+      .catch((loadError) => {
+        if (!cancelled) {
+          startTransition(() =>
+            setPageInsight({
+              message: loadError.message,
+              provider: "",
+              model: "",
+              llm_used: false,
+            }),
+          );
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    routeState.route,
+    routeState.params.filter,
+    selectedProductId,
+    reports.length,
+    recommendations.length,
+    suppliers.length,
+    products.length,
+    dashboard?.predicted_high_demand_products?.length,
+  ]);
 
   const highDemandProducts = useMemo(() => {
     const signalNames = new Set((dashboard?.predicted_high_demand_products ?? []).map((item) => item.name));
@@ -400,7 +444,7 @@ export default function App() {
         {forecastSummary ? <div className="info-banner">{forecastSummary}</div> : null}
 
         {routeState.route === "dashboard" ? (
-          <DashboardPage cards={dashboardCards} dashboard={dashboard} forecastAlerts={forecastAlerts} highDemandProducts={highDemandProducts} />
+          <DashboardPage cards={dashboardCards} dashboard={dashboard} forecastAlerts={forecastAlerts} highDemandProducts={highDemandProducts} insight={pageInsight} />
         ) : null}
         {routeState.route === "products" ? (
           <ProductsPage
@@ -411,12 +455,13 @@ export default function App() {
             products={visibleProducts}
             selectedProduct={selectedProduct}
             setSelectedProductId={setSelectedProductId}
+            insight={pageInsight}
           />
         ) : null}
-        {routeState.route === "forecasts" ? <ForecastsPage forecastAlerts={forecastAlerts} onOpenReorder={() => navigateTo("reorder")} /> : null}
-        {routeState.route === "reorder" ? <ReorderPage recommendations={recommendations} /> : null}
-        {routeState.route === "suppliers" ? <SuppliersPage suppliers={suppliers} /> : null}
-        {routeState.route === "reports" ? <ReportsPage reports={reports} onGenerateReport={handleGenerateReport} isGeneratingReport={isGeneratingReport} /> : null}
+        {routeState.route === "forecasts" ? <ForecastsPage forecastAlerts={forecastAlerts} onOpenReorder={() => navigateTo("reorder")} insight={pageInsight} /> : null}
+        {routeState.route === "reorder" ? <ReorderPage recommendations={recommendations} insight={pageInsight} /> : null}
+        {routeState.route === "suppliers" ? <SuppliersPage suppliers={suppliers} insight={pageInsight} /> : null}
+        {routeState.route === "reports" ? <ReportsPage reports={reports} onGenerateReport={handleGenerateReport} isGeneratingReport={isGeneratingReport} insight={pageInsight} /> : null}
         {routeState.route === "ask" ? (
           <AskPage
             sessionId={sessionId}
@@ -438,7 +483,26 @@ function DataSourceBadge({ text, tone = "local" }) {
   return <div className={`data-source-badge data-source-${tone}`}>{text}</div>;
 }
 
-function DashboardPage({ cards, dashboard, forecastAlerts, highDemandProducts }) {
+function AIInsightPanel({ insight }) {
+  if (!insight?.message) {
+    return null;
+  }
+  const badgeText = insight.llm_used
+    ? `AI explanation via ${insight.provider} ${insight.model}`
+    : "AI explanation unavailable";
+  return (
+    <div className="watch-card architecture-note">
+      <DataSourceBadge text={badgeText} tone={insight.llm_used ? "ai" : "local"} />
+      <p>{insight.message}</p>
+      <div className="meta-row">
+        <span>Provider: {insight.provider || "Unavailable"}</span>
+        <span>LLM Used: {insight.llm_used ? "Yes" : "No"}</span>
+      </div>
+    </div>
+  );
+}
+
+function DashboardPage({ cards, dashboard, forecastAlerts, highDemandProducts, insight }) {
   return (
     <div className="page-grid">
       <section className="hero-card">
@@ -466,6 +530,7 @@ function DashboardPage({ cards, dashboard, forecastAlerts, highDemandProducts })
           </div>
         </div>
       </section>
+      <AIInsightPanel insight={insight} />
 
       <section className="panel">
         <div className="panel-header">
@@ -520,7 +585,7 @@ function DashboardPage({ cards, dashboard, forecastAlerts, highDemandProducts })
   );
 }
 
-function ProductsPage({ filter, onFilterChange, productQuery, setProductQuery, products, selectedProduct, setSelectedProductId }) {
+function ProductsPage({ filter, onFilterChange, productQuery, setProductQuery, products, selectedProduct, setSelectedProductId, insight }) {
   const filterPills = [
     { key: "all", label: "All Products" },
     { key: "low-stock", label: "Low Stock" },
@@ -540,6 +605,7 @@ function ProductsPage({ filter, onFilterChange, productQuery, setProductQuery, p
           </div>
         </div>
         <DataSourceBadge text="Calculated from local inventory/demo data" />
+        <AIInsightPanel insight={insight} />
         <div className="pill-row">
           {filterPills.map((pill) => (
             <button key={pill.key} className={`filter-pill ${filter === pill.key ? "filter-pill-active" : ""}`} onClick={() => onFilterChange(pill.key)}>
@@ -613,7 +679,7 @@ function ProductsPage({ filter, onFilterChange, productQuery, setProductQuery, p
   );
 }
 
-function ForecastsPage({ forecastAlerts, onOpenReorder }) {
+function ForecastsPage({ forecastAlerts, onOpenReorder, insight }) {
   return (
     <div className="page-grid">
       <section className="panel">
@@ -627,6 +693,7 @@ function ForecastsPage({ forecastAlerts, onOpenReorder }) {
           </button>
         </div>
         <DataSourceBadge text="Calculated from local inventory/demo data" />
+        <AIInsightPanel insight={insight} />
         <div className="info-banner">
           Forecasts are calculated using historical demo sales or movement data and forecasting logic. AI may explain the result, but it does not invent stock or forecast numbers.
         </div>
@@ -654,7 +721,7 @@ function ForecastsPage({ forecastAlerts, onOpenReorder }) {
   );
 }
 
-function ReorderPage({ recommendations }) {
+function ReorderPage({ recommendations, insight }) {
   return (
     <div className="page-grid">
       <section className="panel">
@@ -665,6 +732,7 @@ function ReorderPage({ recommendations }) {
           </div>
         </div>
         <DataSourceBadge text="Calculated from local inventory/demo data" />
+        <AIInsightPanel insight={insight} />
         <div className="list-stack">
           {recommendations.map((item) => (
             <article key={item.item_id} className="list-card">
@@ -688,7 +756,7 @@ function ReorderPage({ recommendations }) {
   );
 }
 
-function SuppliersPage({ suppliers }) {
+function SuppliersPage({ suppliers, insight }) {
   return (
     <div className="page-grid">
       <section className="panel">
@@ -699,6 +767,7 @@ function SuppliersPage({ suppliers }) {
           </div>
         </div>
         <DataSourceBadge text="Calculated from local inventory/demo data" />
+        <AIInsightPanel insight={insight} />
         <div className="supplier-grid">
           {suppliers.map((supplier) => (
             <article key={supplier.id} className="supplier-card">
@@ -726,7 +795,7 @@ function SuppliersPage({ suppliers }) {
   );
 }
 
-function ReportsPage({ reports, onGenerateReport, isGeneratingReport }) {
+function ReportsPage({ reports, onGenerateReport, isGeneratingReport, insight }) {
   return (
     <div className="page-grid">
       <section className="panel">
@@ -740,6 +809,7 @@ function ReportsPage({ reports, onGenerateReport, isGeneratingReport }) {
           </button>
         </div>
         <DataSourceBadge text="Calculated from local inventory/demo data" />
+        <AIInsightPanel insight={insight} />
         <div className="list-stack">
           {reports.map((report) => (
             <article key={report.path} className="list-card">
@@ -985,4 +1055,31 @@ function pageTitle(routeState) {
     architecture: "AI Architecture",
     admin: "Admin / Diagnostics",
   }[routeState.route] ?? "AskMamma";
+}
+
+function insightPath(routeState, selectedProductId) {
+  if (routeState.route === "dashboard") {
+    return "/ai/insights/dashboard";
+  }
+  if (routeState.route === "products") {
+    const params = new URLSearchParams();
+    params.set("filter", routeState.params.filter ?? "all");
+    if (selectedProductId) {
+      params.set("product_id", String(selectedProductId));
+    }
+    return `/ai/insights/products?${params.toString()}`;
+  }
+  if (routeState.route === "forecasts") {
+    return "/ai/insights/forecasts";
+  }
+  if (routeState.route === "reorder") {
+    return "/ai/insights/reorder";
+  }
+  if (routeState.route === "suppliers") {
+    return "/ai/insights/suppliers";
+  }
+  if (routeState.route === "reports") {
+    return "/ai/insights/reports";
+  }
+  return "";
 }

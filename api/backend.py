@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
@@ -13,21 +14,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
-from agents.orchestrator import get_recent_traces, get_session_messages, invoke_agent, workflow_mermaid
 from askmamma.tools import (
     add_demo_movement,
     demo_forecast,
     demo_reorder_recommendations,
+    demo_history,
     tool_registry,
     write_demo_report,
 )
 from core import config
-from core.llm_provider import current_runtime_status
+from core.llm_provider import LLM_UNAVAILABLE_MESSAGE, current_runtime_status, get_llm_provider
 from core.observability import configure_langsmith, safe_error_message
 from db.database import (
     create_product,
     dashboard_stats,
     delete_product,
+    find_product,
     get_product,
     initialize_database,
     list_suppliers,
@@ -40,8 +42,6 @@ from memory.service import audit_memory, conversation_memory, semantic_memory
 from protocols.a2a.service import create_task_record, utcnow
 from protocols.agent_cards.builder import build_agent_card
 from protocols.mcp.server import handle_rpc, list_prompts, list_resources, list_tools
-from rag.retrieval import document_search, reindex_documents, save_uploaded_document
-
 
 app = FastAPI(
     title="AskMamma Agent API",
@@ -138,6 +138,65 @@ def _request_key(request: Request, suffix: str) -> str:
     return f"{client}:{suffix}"
 
 
+def _orchestrator():
+    from agents import orchestrator
+
+    return orchestrator
+
+
+def _rag():
+    from rag import retrieval
+
+    return retrieval
+
+
+def _reports_snapshot() -> list[dict[str, Any]]:
+    config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    reports = []
+    for path in sorted(config.REPORT_DIR.glob("*.*"), key=lambda item: item.stat().st_mtime, reverse=True):
+        stats = path.stat()
+        reports.append(
+            {
+                "file_name": path.name,
+                "path": str(path),
+                "updated_at": datetime.fromtimestamp(stats.st_mtime, timezone.utc).isoformat(),
+                "size_bytes": stats.st_size,
+                "download_url": f"/reports/download/{path.name}",
+            }
+        )
+    return reports
+
+
+def _ai_message(prompt: str) -> dict[str, Any]:
+    try:
+        runtime = current_runtime_status()
+    except Exception:
+        runtime = {
+            "provider": "Unavailable",
+            "model": "Unavailable",
+            "llm_used": False,
+            "ollama_base_url": config.OLLAMA_BASE_URL,
+            "ollama_reachable": False,
+        }
+    payload = {
+        "provider": runtime["provider"],
+        "model": runtime["model"],
+        "llm_used": False,
+        "message": LLM_UNAVAILABLE_MESSAGE,
+    }
+    if not runtime["llm_used"]:
+        return payload
+    try:
+        response = get_llm_provider().generate(prompt)
+        return {
+            **payload,
+            "llm_used": True,
+            "message": response,
+        }
+    except Exception:
+        return payload
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "environment": config.APP_ENV}
@@ -148,9 +207,47 @@ def dashboard() -> dict[str, Any]:
     return dashboard_stats()
 
 
+@app.get("/ai/insights/dashboard")
+def ai_dashboard_insight() -> dict[str, Any]:
+    data = dashboard_stats()
+    prompt = (
+        "You are explaining an operations dashboard. Use only the provided JSON. "
+        "Do not invent any numbers. Give a concise plain-English summary of stock pressure, "
+        "high-demand signals, and the biggest operational risk in 3 short bullets.\n\n"
+        f"{json.dumps(data, default=str)}"
+    )
+    return _ai_message(prompt)
+
+
 @app.get("/demo/items", summary="List sample demo items")
 def demo_items(search: str | None = None, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
     return list_products(search=search, limit=limit, offset=offset)
+
+
+@app.get("/ai/insights/products")
+def ai_products_insight(filter: str = "all", product_id: int | None = None) -> dict[str, Any]:
+    products = list_products(limit=100)
+    high_demand_names = {item["name"] for item in dashboard_stats().get("predicted_high_demand_products", [])}
+    if filter == "low-stock":
+        products = [item for item in products if item["stock_quantity"] > 0 and item["stock_quantity"] <= item["reorder_level"]]
+    elif filter == "out-of-stock":
+        products = [item for item in products if item["stock_quantity"] <= 0]
+    elif filter == "high-demand":
+        products = [item for item in products if item["name"] in high_demand_names]
+    selected = get_product(product_id) if product_id else (products[0] if products else None)
+    payload = {
+        "filter": filter,
+        "selected_product": selected,
+        "visible_products_sample": products[:8],
+        "high_demand_names": sorted(high_demand_names),
+    }
+    prompt = (
+        "You are explaining an operations product view. Use only the provided JSON. "
+        "If the filter is high-demand, explain why the selected item is in that group. "
+        "If the item is low on stock or unusual, explain the risk briefly. Keep it to 3 short bullets.\n\n"
+        f"{json.dumps(payload, default=str)}"
+    )
+    return _ai_message(prompt)
 
 
 @app.get("/demo/items/{item_id}", summary="Get one sample demo item")
@@ -205,6 +302,47 @@ def demo_recommendations_reorder() -> list[dict[str, Any]]:
     return demo_reorder_recommendations()
 
 
+@app.get("/ai/insights/forecasts")
+def ai_forecasts_insight() -> dict[str, Any]:
+    recommendations = demo_reorder_recommendations()[:8]
+    top_forecast = demo_forecast(recommendations[0]["sku"], months=6) if recommendations else demo_forecast(months=6)
+    payload = {
+        "recommendations": recommendations,
+        "forecast_example": top_forecast,
+    }
+    prompt = (
+        "You are explaining forecast results for an operations page. Use only the provided JSON. "
+        "Explain in plain English why demand appears to be increasing or decreasing, what the reorder risk is, "
+        "and what the team should watch next. Keep it concise.\n\n"
+        f"{json.dumps(payload, default=str)}"
+    )
+    return _ai_message(prompt)
+
+
+@app.get("/ai/insights/reorder")
+def ai_reorder_insight() -> dict[str, Any]:
+    recommendations = demo_reorder_recommendations()[:10]
+    prompt = (
+        "You are explaining reorder recommendations. Use only the provided JSON. "
+        "Prioritize the biggest reorder risks and explain why these items should be reordered. "
+        "Keep it short and operational.\n\n"
+        f"{json.dumps(recommendations, default=str)}"
+    )
+    return _ai_message(prompt)
+
+
+@app.get("/ai/insights/suppliers")
+def ai_suppliers_insight() -> dict[str, Any]:
+    suppliers = list_suppliers()[:10]
+    prompt = (
+        "You are explaining supplier performance and risk. Use only the provided JSON. "
+        "Summarize the biggest supplier risks, especially low-stock exposure and out-of-stock exposure. "
+        "Keep it to 3 short bullets.\n\n"
+        f"{json.dumps(suppliers, default=str)}"
+    )
+    return _ai_message(prompt)
+
+
 @app.post("/demo/availability/restock", summary="Record sample demo availability replenishment")
 def demo_availability_restock(payload: DemoAvailabilityPayload) -> dict[str, Any]:
     try:
@@ -221,39 +359,52 @@ def demo_forecast_run(payload: DemoForecastPayload) -> dict[str, Any]:
 @app.post("/agent/chat")
 def agent_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
     _enforce_rate_limit(_request_key(request, "agent-chat"))
-    return invoke_agent(payload.message, payload.session_id)
+    return _orchestrator().invoke_agent(payload.message, payload.session_id)
 
 
 @app.post("/agent/run-task")
 def agent_run_task(payload: ChatPayload, request: Request) -> dict[str, Any]:
     _enforce_rate_limit(_request_key(request, "agent-run-task"))
-    return invoke_agent(payload.message, payload.session_id)
+    return _orchestrator().invoke_agent(payload.message, payload.session_id)
 
 
 @app.get("/agent/sessions/{session_id}")
 def agent_session(session_id: str) -> dict[str, Any]:
-    return {"session_id": session_id, "messages": get_session_messages(session_id, limit=100)}
+    return {"session_id": session_id, "messages": _orchestrator().get_session_messages(session_id, limit=100)}
 
 
 @app.get("/agent/traces")
 def agent_traces(limit: int = 50) -> list[dict[str, Any]]:
-    return get_recent_traces(limit)
+    return _orchestrator().get_recent_traces(limit)
 
 
 @app.get("/agent/graph")
 def agent_graph() -> dict[str, Any]:
-    return {"format": "mermaid", "graph": workflow_mermaid()}
+    return {"format": "mermaid", "graph": _orchestrator().workflow_mermaid()}
 
 
 @app.get("/admin/diagnostics")
 def admin_diagnostics() -> dict[str, Any]:
-    runtime = current_runtime_status()
+    try:
+        runtime = current_runtime_status()
+    except Exception as exc:
+        runtime = {
+            "provider": "Unavailable",
+            "model": "Unavailable",
+            "ollama_base_url": config.OLLAMA_BASE_URL,
+            "ollama_reachable": False,
+            "error": safe_error_message(exc),
+        }
+    try:
+        recent_requests = _orchestrator().get_recent_traces(20)
+    except Exception:
+        recent_requests = []
     return {
         "provider": runtime["provider"],
         "model": runtime["model"],
         "ollama_base_url": runtime["ollama_base_url"],
         "ollama_reachable": runtime["ollama_reachable"],
-        "recent_requests": get_recent_traces(20),
+        "recent_requests": recent_requests,
     }
 
 
@@ -306,7 +457,7 @@ def agent_tasks(payload: TaskPayload, request: Request) -> dict[str, Any]:
     TASK_STORE[payload.task_id]["started_at"] = utcnow()
 
     try:
-        result = invoke_agent(payload.message, payload.task_id)
+        result = _orchestrator().invoke_agent(payload.message, payload.task_id)
         TASK_STORE[payload.task_id]["status"] = "completed"
         TASK_STORE[payload.task_id]["assigned_agent"] = result.get("selected_agent") or payload.from_agent
         TASK_STORE[payload.task_id]["output_payload"] = result
@@ -331,17 +482,28 @@ def agent_task_status(task_id: str) -> dict[str, Any]:
 @app.post("/documents/upload")
 async def documents_upload(file: UploadFile = File(...)) -> dict[str, Any]:
     content = await file.read()
-    return save_uploaded_document(file.filename or "upload.txt", content)
+    try:
+        return _rag().save_uploaded_document(file.filename or "upload.txt", content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=safe_error_message(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=safe_error_message(exc)) from exc
 
 
 @app.post("/documents/reindex")
 def documents_reindex() -> dict[str, Any]:
-    return reindex_documents()
+    try:
+        return _rag().reindex_documents()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=safe_error_message(exc)) from exc
 
 
 @app.post("/documents/search")
 def documents_search(payload: DocumentSearchPayload) -> dict[str, Any]:
-    return document_search(payload.query, payload.limit)
+    try:
+        return _rag().document_search(payload.query, payload.limit)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=safe_error_message(exc)) from exc
 
 
 @app.get("/reports/demo", summary="Generate a sample demo report")
@@ -356,6 +518,22 @@ def reports_askmamma(output_format: str = "md") -> dict[str, Any]:
     return {**report, "download_url": f"/reports/download/{report['file_name']}"}
 
 
+@app.get("/ai/insights/reports")
+def ai_reports_insight() -> dict[str, Any]:
+    payload = {
+        "dashboard": dashboard_stats(),
+        "recommendations": demo_reorder_recommendations()[:8],
+        "suppliers": list_suppliers()[:8],
+        "reports": _reports_snapshot()[:5],
+    }
+    prompt = (
+        "You are writing a concise executive-style report summary. Use only the provided JSON. "
+        "Summarize the main inventory risks, supplier issues, and report-ready talking points in 3 short bullets.\n\n"
+        f"{json.dumps(payload, default=str)}"
+    )
+    return _ai_message(prompt)
+
+
 @app.get("/reports/demo-forecast", summary="Generate a sample demo forecast snapshot")
 def reports_demo_forecast() -> dict[str, Any]:
     return demo_forecast(months=6)
@@ -363,20 +541,7 @@ def reports_demo_forecast() -> dict[str, Any]:
 
 @app.get("/reports")
 def reports_list() -> list[dict[str, Any]]:
-    config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    reports = []
-    for path in sorted(config.REPORT_DIR.glob("*.*"), key=lambda item: item.stat().st_mtime, reverse=True):
-        stats = path.stat()
-        reports.append(
-            {
-                "file_name": path.name,
-                "path": str(path),
-                "updated_at": datetime.fromtimestamp(stats.st_mtime, timezone.utc).isoformat(),
-                "size_bytes": stats.st_size,
-                "download_url": f"/reports/download/{path.name}",
-            }
-        )
-    return reports
+    return _reports_snapshot()
 
 
 @app.get("/reports/download/{file_name}")
