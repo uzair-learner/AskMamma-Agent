@@ -1,13 +1,20 @@
+from askmamma.tools import (
+    demo_forecast,
+    demo_item_lookup,
+    demo_partner_lookup,
+    demo_status,
+    invoke_named_tool,
+    tool_registry,
+)
 from scripts.seed_data import seed
-from askmamma.tools import demo_forecast, demo_status, demo_item_search, demo_partner_lookup
 
 
 def setup_module():
     seed()
 
 
-def test_demo_item_search_finds_seeded_item():
-    results = demo_item_search("USB-C")
+def test_demo_item_lookup_finds_seeded_item():
+    results = demo_item_lookup("USB-C")
     assert any(item["sku"] == "TECH-001" for item in results)
 
 
@@ -27,3 +34,14 @@ def test_demo_forecast_uses_sample_history():
     result = demo_forecast("Packing Tape")
     assert result["found"] is True
     assert result["predicted_quantity"] > 0
+
+
+def test_tool_registry_has_input_and_output_schema():
+    tool = next(item for item in tool_registry() if item.name == "DemoForecastTool")
+    assert tool.input_schema["type"] == "object"
+    assert tool.output_schema["type"] == "object"
+
+
+def test_invoke_named_tool_runs_langchain_tool():
+    result = invoke_named_tool("DemoAvailabilityTool", {"identifier": "Copy Paper"})
+    assert result["found"] is True

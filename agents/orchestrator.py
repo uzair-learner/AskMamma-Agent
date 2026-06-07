@@ -1,4 +1,4 @@
-"""Hierarchical AskMamma agent orchestration with memory and tracing."""
+"""LangGraph-based AskMamma orchestration with deterministic fallback."""
 
 from __future__ import annotations
 
@@ -7,20 +7,28 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypedDict
 
-from db.database import get_connection, initialize_database, list_products, rows_to_dicts, utc_now
-from rag.retrieval import document_search
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.graph import END, START, StateGraph
+
 from askmamma.tools import (
+    audit_log,
     demo_forecast,
-    demo_status,
-    demo_item_search,
-    demo_reorder_recommendations,
     demo_history,
+    demo_item_lookup,
     demo_partner_lookup,
+    demo_reorder_recommendations,
+    demo_status,
+    langchain_tools,
     summarize_tools_for_trace,
     write_demo_report,
 )
+from core.llm_provider import get_chat_model, supports_langchain_agents
+from core.observability import configure_langsmith, redact_payload, safe_error_message, tracing_backend_name
+from db.database import get_connection, initialize_database, list_products, rows_to_dicts, utc_now
+from rag.retrieval import document_search as document_search_tool
 
 
 SYSTEM_PROMPT = """
@@ -30,7 +38,37 @@ Use tools for demo availability, partners, history, forecasts, documents, and re
 If demo history is insufficient, say so and provide a conservative fallback.
 Confirm before destructive actions such as deleting demo items or major availability adjustments.
 Do not reveal secrets or environment variables.
+Clearly label sample or demo data when answering item, availability, partner, forecast, or report questions.
 """.strip()
+
+
+class GraphState(TypedDict, total=False):
+    user_input: str
+    session_id: str
+    route: str
+    selected_agent: str
+    answer: str
+    tools_called: list[str]
+    tool_inputs: list[dict[str, Any]]
+    tool_outputs: list[Any]
+    intermediate_steps: list[dict[str, Any]]
+    route_path: list[str]
+    review_notes: list[str]
+    errors: list[str]
+    trace_backend: str
+
+
+@dataclass
+class AgentResult:
+    answer: str
+    selected_agent: str
+    tools_called: list[str] = field(default_factory=list)
+    tool_inputs: list[dict[str, Any]] = field(default_factory=list)
+    tool_outputs: list[Any] = field(default_factory=list)
+    intermediate_steps: list[dict[str, Any]] = field(default_factory=list)
+    route_path: list[str] = field(default_factory=list)
+    review_notes: list[str] = field(default_factory=list)
+    trace_backend: str = "sqlite"
 
 
 def save_message(session_id: str, role: str, content: str) -> None:
@@ -41,7 +79,7 @@ def save_message(session_id: str, role: str, content: str) -> None:
             INSERT INTO chat_history (session_id, role, content, created_at)
             VALUES (?, ?, ?, ?)
             """,
-            (session_id, role, content, utc_now()),
+            (session_id, role, redact_payload(content), utc_now()),
         )
 
 
@@ -100,6 +138,16 @@ def get_recent_traces(limit: int = 50) -> list[dict[str, Any]]:
     return rows_to_dicts(rows)
 
 
+def _history_as_messages(session_id: str) -> list[Any]:
+    messages: list[Any] = []
+    for record in get_session_messages(session_id, limit=6):
+        if record["role"] == "user":
+            messages.append(HumanMessage(content=record["content"]))
+        elif record["role"] == "assistant":
+            messages.append(AIMessage(content=record["content"]))
+    return messages
+
+
 def _extract_identifier(message: str, session_id: str) -> str | None:
     quoted = re.findall(r"['\"]([^'\"]+)['\"]", message)
     if quoted:
@@ -120,6 +168,7 @@ def _extract_identifier(message: str, session_id: str) -> str | None:
         "stock",
         "availability",
         "supplier",
+        "partner",
         "provides",
         "available",
         "have",
@@ -129,7 +178,6 @@ def _extract_identifier(message: str, session_id: str) -> str | None:
         "about",
         "its",
         "that",
-        "item",
         "forecast",
         "demand",
         "next",
@@ -140,6 +188,7 @@ def _extract_identifier(message: str, session_id: str) -> str | None:
         "expect",
         "this",
         "week",
+        "demo",
     }
     words = [word for word in re.findall(r"[a-zA-Z0-9-]+", lowered) if word not in stop]
     if words:
@@ -162,35 +211,108 @@ def _extract_identifier(message: str, session_id: str) -> str | None:
     return None
 
 
-@dataclass
-class AgentResult:
-    answer: str
-    selected_agent: str
-    tools_called: list[str] = field(default_factory=list)
-    tool_inputs: list[dict[str, Any]] = field(default_factory=list)
-    tool_outputs: list[Any] = field(default_factory=list)
+def _append_step(state: GraphState, step: dict[str, Any]) -> list[dict[str, Any]]:
+    return [*state.get("intermediate_steps", []), redact_payload(step)]
 
 
-class AskMammaActionAgent:
-    name = "AskMammaActionAgent"
+def _append_route(state: GraphState, node_name: str) -> list[str]:
+    return [*state.get("route_path", []), node_name]
 
-    def run(self, message: str, session_id: str) -> AgentResult:
-        lowered = message.lower()
-        identifier = _extract_identifier(message, session_id)
-        if ("supplier" in lowered or "partner" in lowered) and identifier:
-            result = demo_partner_lookup(identifier)
-            if not result.get("found"):
-                answer = result["message"]
-            else:
-                item_info = demo_status(identifier).get("item")
-                if item_info:
-                    remember_session_value(session_id, "last_sku", item_info["sku"])
-                partner = result.get("partner")
-                answer = (
-                    f"In the sample demo catalog, **{result.get('item')}** is supplied by {partner.get('name')} "
-                    f"(email: {partner.get('email')}, lead time: {partner.get('lead_time_days')} days)."
-                )
-            return AgentResult(answer, self.name, ["DemoPartnerLookupTool"], [{"identifier": identifier}], [result])
+
+def _route_message(message: str) -> str:
+    lowered = message.lower()
+    if lowered.strip() in {"hi", "hello", "hey", "good morning", "good afternoon"}:
+        return "greeting"
+    if any(word in lowered for word in ["document", "policy", "manual", "contract", "return", "uploaded"]):
+        return "document"
+    if any(word in lowered for word in ["forecast", "demand", "next month", "sales history", "history", "high-demand"]):
+        return "forecast"
+    if any(word in lowered for word in ["report", "summary"]):
+        return "report"
+    return "actions"
+
+
+def _lc_tools(names: set[str]):
+    return [tool for tool in langchain_tools() if tool.name in names]
+
+
+def _run_langchain_tool_agent(
+    agent_name: str,
+    system_prompt: str,
+    tool_names: set[str],
+    message: str,
+    session_id: str,
+) -> AgentResult | None:
+    if not supports_langchain_agents():
+        return None
+
+    llm = get_chat_model()
+    if llm is None:
+        return None
+
+    tools = _lc_tools(tool_names)
+    agent = create_agent(
+        model=llm,
+        tools=tools,
+        system_prompt=system_prompt,
+        name=agent_name,
+    )
+    result = agent.invoke({"messages": [*_history_as_messages(session_id), HumanMessage(content=message)]})
+    messages = result.get("messages", [])
+    intermediate_steps: list[dict[str, Any]] = []
+    tools_called = []
+    tool_inputs = []
+    tool_outputs = []
+    pending_calls: dict[str, dict[str, Any]] = {}
+    for msg in messages:
+        if isinstance(msg, AIMessage):
+            for call in getattr(msg, "tool_calls", []) or []:
+                tool_name = call.get("name", "unknown")
+                tool_args = call.get("args", {})
+                tools_called.append(tool_name)
+                tool_inputs.append(tool_args if isinstance(tool_args, dict) else {"input": tool_args})
+                step = {"agent": agent_name, "tool": tool_name, "tool_input": tool_args}
+                pending_calls[call.get("id", tool_name)] = step
+                intermediate_steps.append(step)
+        elif isinstance(msg, ToolMessage):
+            tool_outputs.append(msg.content)
+            if msg.tool_call_id in pending_calls:
+                pending_calls[msg.tool_call_id]["observation"] = redact_payload(msg.content)
+
+    final_answer = ""
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage) and not getattr(msg, "tool_calls", None):
+            final_answer = msg.text() if hasattr(msg, "text") else str(msg.content)
+            break
+    if not final_answer and messages:
+        final_answer = str(messages[-1].content)
+    return AgentResult(
+        answer=final_answer,
+        selected_agent=agent_name,
+        tools_called=tools_called,
+        tool_inputs=tool_inputs,
+        tool_outputs=tool_outputs,
+        intermediate_steps=intermediate_steps,
+    )
+
+
+def _deterministic_action(message: str, session_id: str) -> AgentResult:
+    lowered = message.lower()
+    identifier = _extract_identifier(message, session_id)
+    if ("supplier" in lowered or "partner" in lowered) and identifier:
+        result = demo_partner_lookup(identifier)
+        if not result.get("found"):
+            answer = result["message"]
+        else:
+            item_info = demo_status(identifier).get("item")
+            if item_info:
+                remember_session_value(session_id, "last_sku", item_info["sku"])
+            partner = result.get("partner")
+            answer = (
+                f"In the sample demo catalog, **{result.get('item')}** is supplied by {partner.get('name')} "
+                f"(email: {partner.get('email')}, lead time: {partner.get('lead_time_days')} days)."
+            )
+        return AgentResult(answer, "AskMammaActionAgent", ["DemoPartnerLookupTool"], [{"identifier": identifier}], [result])
 
         if "low" in lowered and ("stock" in lowered or "availability" in lowered):
             result = demo_status()
@@ -198,158 +320,259 @@ class AskMammaActionAgent:
             if not low:
                 answer = "No sample demo items are currently below their demo threshold."
             else:
-                answer = "Low-availability demo items:\n" + "\n".join(
+                answer = "In the sample demo catalog, low-availability demo items are:\n" + "\n".join(
                     f"- {p['sku']} **{p['name']}**: {p['stock_quantity']} on hand, demo threshold {p['reorder_level']}"
                     for p in low
                 )
-            return AgentResult(answer, self.name, ["DemoAvailabilityTool"], [{"identifier": None}], [result])
+        return AgentResult(answer, "AskMammaActionAgent", ["DemoAvailabilityTool"], [{"identifier": None}], [result])
 
         if ("out" in lowered or "unavailable" in lowered) and ("stock" in lowered or "availability" in lowered):
             result = demo_status()
             out = result["out_of_stock"]
-            answer = "Unavailable demo items:\n" + "\n".join(
+            answer = "In the sample demo catalog, unavailable demo items are:\n" + "\n".join(
                 f"- {p['sku']} **{p['name']}**" for p in out
             ) if out else "No sample demo items are unavailable."
-            return AgentResult(answer, self.name, ["DemoAvailabilityTool"], [{"identifier": None}], [result])
+        return AgentResult(answer, "AskMammaActionAgent", ["DemoAvailabilityTool"], [{"identifier": None}], [result])
 
-        if identifier:
-            result = demo_status(identifier)
-            if not result.get("found"):
-                search = demo_item_search(identifier)
-                answer = "No exact demo item match found. Similar demo items:\n" + "\n".join(
-                    f"- {p['sku']} **{p['name']}** ({p['stock_quantity']} on hand)" for p in search[:5]
-                )
-                return AgentResult(answer, self.name, ["DemoAvailabilityTool", "DemoItemSearchTool"], [{"identifier": identifier}, {"query": identifier}], [result, search])
-            item = result.get("item")
-            remember_session_value(session_id, "last_sku", item["sku"])
-            answer = (
-                f"In the sample demo catalog, **{item['name']}** ({item['sku']}) has {item['stock_quantity']} units on hand. "
-                f"Demo threshold: {item['reorder_level']}. Price: ${item['price']:.2f}. "
-                f"Partner: {item.get('supplier_name')}. "
-                f"Status: {'unavailable' if result['out_of_stock'] else 'low availability' if result['low_stock'] else 'available'}."
-            )
-            return AgentResult(answer, self.name, ["DemoAvailabilityTool"], [{"identifier": identifier}], [result])
-
-        result = demo_item_search(message)
-        answer = "Matching demo items:\n" + "\n".join(
-            f"- {p['sku']} **{p['name']}**: {p['stock_quantity']} on hand" for p in result[:10]
-        )
-        return AgentResult(answer, self.name, ["DemoItemSearchTool"], [{"query": message}], [result])
-
-
-class ForecastAgent:
-    name = "ForecastAgent"
-
-    def run(self, message: str, session_id: str) -> AgentResult:
-        identifier = _extract_identifier(message, session_id)
-        history = demo_history(identifier, months=6)
-        forecast = demo_forecast(identifier, months=6)
-        if history.get("item"):
-            remember_session_value(session_id, "last_sku", history["item"]["sku"])
-        if not forecast.get("found"):
-            answer = forecast["message"]
-        else:
-            answer = (
-                f"Based on sample demo history, expected next-month demand is **{forecast['predicted_quantity']} units**. "
-                f"{forecast['explanation']}"
-            )
-        return AgentResult(
-            answer,
-            self.name,
-            ["DemoHistoryTool", "DemoForecastTool"],
-            [{"identifier": identifier, "months": 6}, {"identifier": identifier, "months": 6}],
-            [history, forecast],
-        )
-
-
-class DocumentAgent:
-    name = "DocumentAgent"
-
-    def run(self, message: str, session_id: str) -> AgentResult:
-        result = document_search(message)
+    if identifier:
+        result = demo_status(identifier)
         if not result.get("found"):
-            answer = result["message"]
-        else:
-            lines = ["I found these document references:"]
-            for item in result["results"][:3]:
-                page = f", page {item['page_number']}" if item.get("page_number") else ""
-                lines.append(f"- {item['file_name']}{page}: {item['text'][:220].strip()}...")
-            answer = "\n".join(lines)
-        return AgentResult(answer, self.name, ["DocumentSearchTool"], [{"query": message}], [result])
-
-
-class ReportAgent:
-    name = "ReportAgent"
-
-    def run(self, message: str, session_id: str) -> AgentResult:
-        report = write_demo_report("AskMamma Operations Report")
-        recs = demo_reorder_recommendations()
-        answer = f"{report['summary']}. It includes {len(recs)} sample demo replenishment recommendations."
-        return AgentResult(
-            answer,
-            self.name,
-            ["DemoReportWriterTool", "DemoRecommendationTool"],
-            [{"title": "AskMamma Operations Report"}, {"identifier": None}],
-            [report, recs],
-        )
-
-
-class QualityReviewAgent:
-    name = "QualityReviewAgent"
-
-    def run(self, result: AgentResult) -> AgentResult:
-        if result.selected_agent in {"ForecastAgent", "ReportAgent"} and not result.tools_called:
-            result.answer += "\n\nQuality note: no tool evidence was available for this answer."
-        if "forecast" in result.answer.lower() and "units" not in result.answer.lower():
-            result.answer += "\n\nQuality note: forecast answers should include quantities when data is available."
-        result.tools_called.append("QualityReviewAgent")
-        result.tool_inputs.append({"answer": result.answer[:300]})
-        result.tool_outputs.append({"review": "passed"})
-        return result
-
-
-class SupervisorAgent:
-    name = "SupervisorAgent"
-
-    def __init__(self) -> None:
-        self.action_agent = AskMammaActionAgent()
-        self.forecast_agent = ForecastAgent()
-        self.document_agent = DocumentAgent()
-        self.report_agent = ReportAgent()
-        self.quality_agent = QualityReviewAgent()
-
-    def route(self, message: str) -> str:
-        lowered = message.lower()
-        if lowered.strip() in {"hi", "hello", "hey", "good morning", "good afternoon"}:
-            return "greeting"
-        if any(word in lowered for word in ["document", "policy", "manual", "contract", "return", "uploaded"]):
-            return "document"
-        if any(word in lowered for word in ["forecast", "demand", "next month", "sales history", "history", "high-demand"]):
-            return "forecast"
-        if any(word in lowered for word in ["report", "summary"]):
-            return "report"
-        if any(word in lowered for word in ["reorder", "restock", "stockout", "supplier", "partner", "stock", "availability", "available", "product", "item", "sku"]):
-            return "actions"
-        return "actions"
-
-    def run(self, message: str, session_id: str) -> AgentResult:
-        route = self.route(message)
-        if route == "greeting":
-            return AgentResult(
-                "Hello. I can help with AskMamma demo items, availability checks, partners, forecasts, reports, and document search.",
-                self.name,
+            search = demo_item_lookup(identifier)
+            answer = "No exact demo item match found. Similar demo items:\n" + "\n".join(
+                f"- {p['sku']} **{p['name']}** ({p['stock_quantity']} on hand)" for p in search[:5]
             )
-        if route == "document":
-            result = self.document_agent.run(message, session_id)
-        elif route == "forecast":
-            result = self.forecast_agent.run(message, session_id)
-            result = self.quality_agent.run(result)
-        elif route == "report":
-            result = self.report_agent.run(message, session_id)
-            result = self.quality_agent.run(result)
-        else:
-            result = self.action_agent.run(message, session_id)
-        return result
+            return AgentResult(
+                answer,
+                "AskMammaActionAgent",
+                ["DemoAvailabilityTool", "DemoItemLookupTool"],
+                [{"identifier": identifier}, {"query": identifier}],
+                [result, search],
+            )
+        item = result.get("item")
+        remember_session_value(session_id, "last_sku", item["sku"])
+        answer = (
+            f"In the sample demo catalog, **{item['name']}** ({item['sku']}) has {item['stock_quantity']} units on hand. "
+            f"Demo threshold: {item['reorder_level']}. Price: ${item['price']:.2f}. "
+            f"Partner: {item.get('supplier_name')}. "
+            f"Status: {'unavailable' if result['out_of_stock'] else 'low availability' if result['low_stock'] else 'available'}."
+        )
+        return AgentResult(answer, "AskMammaActionAgent", ["DemoAvailabilityTool"], [{"identifier": identifier}], [result])
+
+    result = demo_item_lookup(message)
+    answer = "Matching demo items:\n" + "\n".join(
+        f"- {p['sku']} **{p['name']}**: {p['stock_quantity']} on hand" for p in result[:10]
+    )
+    return AgentResult(answer, "AskMammaActionAgent", ["DemoItemLookupTool"], [{"query": message}], [result])
+
+
+def _deterministic_forecast(message: str, session_id: str) -> AgentResult:
+    identifier = _extract_identifier(message, session_id)
+    history = demo_history(identifier, months=6)
+    forecast = demo_forecast(identifier, months=6)
+    if history.get("item"):
+        remember_session_value(session_id, "last_sku", history["item"]["sku"])
+    if not forecast.get("found"):
+        answer = forecast["message"]
+    else:
+        answer = (
+            f"Based on sample demo history, expected next-month demand is **{forecast['predicted_quantity']} units**. "
+            f"{forecast['explanation']}"
+        )
+    return AgentResult(
+        answer,
+        "ForecastAgent",
+        ["DemoHistoryTool", "DemoForecastTool"],
+        [{"identifier": identifier, "months": 6}, {"identifier": identifier, "months": 6}],
+        [history, forecast],
+    )
+
+
+def _deterministic_document(message: str) -> AgentResult:
+    result = document_search_tool(message)
+    if not result.get("found"):
+        answer = result["message"]
+    else:
+        lines = ["I found these document references:"]
+        for item in result["results"][:3]:
+            page = f", page {item['page_number']}" if item.get("page_number") else ""
+            lines.append(f"- {item['file_name']}{page}: {item['text'][:220].strip()}...")
+        answer = "\n".join(lines)
+    return AgentResult(answer, "DocumentAgent", ["DocumentSearchTool"], [{"query": message, "limit": 5}], [result])
+
+
+def _deterministic_report() -> AgentResult:
+    report = write_demo_report("AskMamma Operations Report")
+    recs = demo_reorder_recommendations()
+    answer = f"{report['summary']}. It includes {len(recs)} sample demo replenishment recommendations."
+    return AgentResult(
+        answer,
+        "ReportAgent",
+        ["DemoReportWriterTool", "DemoRecommendationTool"],
+        [{"title": "AskMamma Operations Report"}, {"identifier": None}],
+        [report, recs],
+    )
+
+
+def _result_to_state(state: GraphState, result: AgentResult, node_name: str) -> GraphState:
+    route_path = _append_route(state, node_name)
+    steps = state.get("intermediate_steps", [])
+    for step in result.intermediate_steps:
+        steps = [*steps, redact_payload(step)]
+    if not result.intermediate_steps:
+        steps = [*steps, {"agent": result.selected_agent, "mode": "deterministic_fallback"}]
+    return {
+        "selected_agent": result.selected_agent,
+        "answer": result.answer,
+        "tools_called": result.tools_called,
+        "tool_inputs": redact_payload(result.tool_inputs),
+        "tool_outputs": redact_payload(result.tool_outputs),
+        "intermediate_steps": steps,
+        "route_path": route_path,
+        "trace_backend": tracing_backend_name(),
+    }
+
+
+def supervisor_node(state: GraphState) -> GraphState:
+    route = _route_message(state["user_input"])
+    answer = None
+    if route == "greeting":
+        answer = "Hello. I can help with AskMamma demo items, availability checks, partners, forecasts, reports, and document search."
+    return {
+        "route": route,
+        "answer": answer,
+        "selected_agent": "SupervisorAgent" if route == "greeting" else "",
+        "intermediate_steps": _append_step(state, {"agent": "SupervisorAgent", "route": route}),
+        "route_path": _append_route(state, "SupervisorAgent"),
+        "trace_backend": tracing_backend_name(),
+    }
+
+
+def action_node(state: GraphState) -> GraphState:
+    prompt = (
+        SYSTEM_PROMPT
+        + "\nYou are the AskMamma action specialist. Use demo item lookup, availability, and partner tools as needed."
+    )
+    result = _run_langchain_tool_agent(
+        "AskMammaActionAgent",
+        prompt,
+        {"DemoItemLookupTool", "DemoAvailabilityTool", "DemoPartnerLookupTool", "DemoRecommendationTool"},
+        state["user_input"],
+        state["session_id"],
+    ) or _deterministic_action(state["user_input"], state["session_id"])
+    return _result_to_state(state, result, "AskMammaActionAgent")
+
+
+def forecast_node(state: GraphState) -> GraphState:
+    prompt = (
+        SYSTEM_PROMPT
+        + "\nYou are the AskMamma forecasting specialist. Use demo history, forecast, and recommendation tools."
+    )
+    result = _run_langchain_tool_agent(
+        "ForecastAgent",
+        prompt,
+        {"DemoHistoryTool", "DemoForecastTool", "DemoRecommendationTool"},
+        state["user_input"],
+        state["session_id"],
+    ) or _deterministic_forecast(state["user_input"], state["session_id"])
+    return _result_to_state(state, result, "ForecastAgent")
+
+
+def document_node(state: GraphState) -> GraphState:
+    prompt = (
+        SYSTEM_PROMPT
+        + "\nYou are the AskMamma document specialist. Use only the document search tool and answer from retrieved evidence."
+    )
+    result = _run_langchain_tool_agent(
+        "DocumentAgent",
+        prompt,
+        {"DocumentSearchTool"},
+        state["user_input"],
+        state["session_id"],
+    ) or _deterministic_document(state["user_input"])
+    return _result_to_state(state, result, "DocumentAgent")
+
+
+def report_node(state: GraphState) -> GraphState:
+    prompt = (
+        SYSTEM_PROMPT
+        + "\nYou are the AskMamma reporting specialist. Use report and recommendation tools to generate concise demo reports."
+    )
+    result = _run_langchain_tool_agent(
+        "ReportAgent",
+        prompt,
+        {"DemoReportWriterTool", "DemoRecommendationTool", "DemoForecastTool"},
+        state["user_input"],
+        state["session_id"],
+    ) or _deterministic_report()
+    return _result_to_state(state, result, "ReportAgent")
+
+
+def quality_node(state: GraphState) -> GraphState:
+    answer = state.get("answer", "")
+    notes = list(state.get("review_notes", []))
+    if state.get("selected_agent") in {"ForecastAgent", "ReportAgent"} and not state.get("tools_called"):
+        notes.append("Quality note: no tool evidence was available for this answer.")
+    if "forecast" in answer.lower() and "units" not in answer.lower():
+        notes.append("Quality note: forecast answers should include quantities when data is available.")
+    if state.get("selected_agent") != "DocumentAgent" and "sample demo" not in answer.lower():
+        notes.append("Quality note: answers about demo data should say they are based on sample/demo data.")
+
+    if notes:
+        answer = answer + "\n\n" + "\n".join(notes)
+
+    audit_message = json.dumps(
+        {
+            "selected_agent": state.get("selected_agent"),
+            "route_path": state.get("route_path", []),
+            "tools_called": state.get("tools_called", []),
+        },
+        default=str,
+    )
+    audit_result = audit_log(state["session_id"], audit_message)
+
+    return {
+        "answer": answer,
+        "review_notes": notes,
+        "route_path": _append_route(state, "QualityReviewAgent"),
+        "intermediate_steps": _append_step(state, {"agent": "QualityReviewAgent", "notes": notes}),
+        "tool_outputs": [*state.get("tool_outputs", []), audit_result],
+    }
+
+
+def _route_after_supervisor(state: GraphState) -> str:
+    return state.get("route", "actions")
+
+
+def _build_graph():
+    graph = StateGraph(GraphState)
+    graph.add_node("supervisor", supervisor_node)
+    graph.add_node("action", action_node)
+    graph.add_node("forecast", forecast_node)
+    graph.add_node("document", document_node)
+    graph.add_node("report", report_node)
+    graph.add_node("quality", quality_node)
+
+    graph.add_edge(START, "supervisor")
+    graph.add_conditional_edges(
+        "supervisor",
+        _route_after_supervisor,
+        {
+            "greeting": END,
+            "actions": "action",
+            "forecast": "forecast",
+            "document": "document",
+            "report": "report",
+        },
+    )
+    graph.add_edge("action", "quality")
+    graph.add_edge("forecast", "quality")
+    graph.add_edge("document", "quality")
+    graph.add_edge("report", "quality")
+    graph.add_edge("quality", END)
+    return graph.compile()
+
+
+GRAPH = _build_graph()
 
 
 def trace_run(
@@ -370,31 +593,66 @@ def trace_run(
             """,
             (
                 session_id,
-                user_input,
+                redact_payload(user_input),
                 result.selected_agent,
                 json.dumps(result.tools_called),
-                json.dumps(result.tool_inputs, default=str),
-                summarize_tools_for_trace(result.tool_outputs),
-                result.answer,
+                json.dumps(redact_payload(result.tool_inputs), default=str),
+                summarize_tools_for_trace(
+                    [*result.tool_outputs, {"intermediate_steps": result.intermediate_steps, "route_path": result.route_path}]
+                ),
+                redact_payload(result.answer),
                 latency_ms,
                 error,
-                "{}",
+                json.dumps({"trace_backend": result.trace_backend}),
                 utc_now(),
             ),
         )
 
 
+def _state_to_result(state: GraphState) -> AgentResult:
+    return AgentResult(
+        answer=state.get("answer", ""),
+        selected_agent=state.get("selected_agent", "SupervisorAgent"),
+        tools_called=state.get("tools_called", []),
+        tool_inputs=state.get("tool_inputs", []),
+        tool_outputs=state.get("tool_outputs", []),
+        intermediate_steps=state.get("intermediate_steps", []),
+        route_path=state.get("route_path", []),
+        review_notes=state.get("review_notes", []),
+        trace_backend=state.get("trace_backend", tracing_backend_name()),
+    )
+
+
 def invoke_agent(user_input: str, session_id: str | None = None) -> dict[str, Any]:
     initialize_database()
+    configure_langsmith()
     session_id = session_id or str(uuid.uuid4())
     start = time.perf_counter()
     save_message(session_id, "user", user_input)
     try:
-        result = SupervisorAgent().run(user_input, session_id)
+        final_state = GRAPH.invoke(
+            {
+                "user_input": user_input,
+                "session_id": session_id,
+                "tools_called": [],
+                "tool_inputs": [],
+                "tool_outputs": [],
+                "intermediate_steps": [],
+                "route_path": [],
+                "review_notes": [],
+                "errors": [],
+                "trace_backend": tracing_backend_name(),
+            }
+        )
+        result = _state_to_result(final_state)
         error = None
     except Exception as exc:
-        result = AgentResult(f"Sorry, I could not complete that request: {exc}", "SupervisorAgent")
-        error = str(exc)
+        result = AgentResult(
+            f"Sorry, I could not complete that request: {safe_error_message(exc)}",
+            "SupervisorAgent",
+            trace_backend=tracing_backend_name(),
+        )
+        error = safe_error_message(exc)
     latency_ms = int((time.perf_counter() - start) * 1000)
     save_message(session_id, "assistant", result.answer)
     trace_run(session_id, user_input, result, latency_ms, error)
@@ -404,5 +662,9 @@ def invoke_agent(user_input: str, session_id: str | None = None) -> dict[str, An
         "selected_agent": result.selected_agent,
         "tools_called": result.tools_called,
         "tool_inputs": result.tool_inputs,
+        "intermediate_steps": result.intermediate_steps,
+        "route_path": result.route_path,
+        "review_notes": result.review_notes,
+        "trace_backend": result.trace_backend,
         "latency_ms": latency_ms,
     }

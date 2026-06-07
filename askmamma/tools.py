@@ -1,16 +1,17 @@
-"""Typed tool functions used by AskMamma agents and exposed through APIs."""
+"""Typed AskMamma demo tools exposed to LangChain, FastAPI, and MCP adapters."""
 
 from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import date, datetime
-from pathlib import Path
+from datetime import datetime
 from typing import Any
 
+from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from core import config
+from core.observability import redact_payload
 from db.database import (
     find_product,
     get_connection,
@@ -21,59 +22,101 @@ from db.database import (
     rows_to_dicts,
     utc_now,
 )
+from rag.retrieval import document_search
 
 
 class ToolCall(BaseModel):
     name: str
     description: str
     input_schema: dict[str, Any]
-    output_schema: dict[str, Any] = Field(default_factory=dict)
+    output_schema: dict[str, Any]
 
 
-def tool_registry() -> list[ToolCall]:
-    return [
-        ToolCall(name="DemoItemSearchTool", description="Search sample AskMamma demo items by name, SKU, category, partner, or description.", input_schema={"query": "string"}),
-        ToolCall(name="DemoAvailabilityTool", description="Return quantity, threshold, low-availability status, and unavailable status for sample demo items.", input_schema={"identifier": "string optional"}),
-        ToolCall(name="DemoPartnerLookupTool", description="Find partner information for a sample demo item.", input_schema={"identifier": "string"}),
-        ToolCall(name="DemoHistoryTool", description="Retrieve sample history for a demo item or category.", input_schema={"identifier": "string optional", "months": "integer"}),
-        ToolCall(name="DemoForecastTool", description="Predict demo demand using moving average and trend adjustment based on sample history.", input_schema={"identifier": "string optional", "months": "integer"}),
-        ToolCall(name="DemoRecommendationTool", description="Recommend sample replenishment quantities from demo availability, thresholds, history, and lead time.", input_schema={"identifier": "string optional"}),
-        ToolCall(name="DocumentSearchTool", description="Search indexed documents using local RAG retrieval.", input_schema={"query": "string"}),
-        ToolCall(name="DemoReportWriterTool", description="Generate a sample AskMamma operations report and save it under outputs/reports.", input_schema={"title": "string optional"}),
-        ToolCall(name="DemoMovementTool", description="Record sample stock-in, stock-out, or adjustment movement.", input_schema={"product_id": "integer", "movement_type": "string", "quantity": "integer", "reason": "string"}),
-        ToolCall(name="AuditLogTool", description="Save agent actions and tool calls.", input_schema={"session_id": "string", "message": "string"}),
-    ]
+class DemoItemLookupInput(BaseModel):
+    query: str = Field(..., min_length=1, description="Demo item name, SKU, category, or descriptive search.")
+
+
+class DemoAvailabilityInput(BaseModel):
+    identifier: str | None = Field(default=None, description="Optional sample demo item SKU or name.")
+
+
+class DemoPartnerLookupInput(BaseModel):
+    identifier: str = Field(..., min_length=1, description="Sample demo item SKU or name.")
+
+
+class DemoHistoryInput(BaseModel):
+    identifier: str | None = Field(default=None, description="Optional sample demo item SKU or name.")
+    months: int = Field(default=6, ge=1, le=24, description="How many months of demo history to inspect.")
+
+
+class DemoForecastInput(BaseModel):
+    identifier: str | None = Field(default=None, description="Optional sample demo item SKU or name.")
+    months: int = Field(default=6, ge=1, le=24, description="How many months of history to use for the forecast.")
+
+
+class DemoRecommendationInput(BaseModel):
+    identifier: str | None = Field(default=None, description="Optional sample demo item SKU or name.")
+
+
+class DocumentSearchInput(BaseModel):
+    query: str = Field(..., min_length=1, description="Question or search string for AskMamma documents.")
+    limit: int = Field(default=5, ge=1, le=10, description="Maximum number of retrieved chunks.")
+
+
+class DemoReportInput(BaseModel):
+    title: str = Field(default="AskMamma Operations Report", min_length=3, max_length=120)
+
+
+class DemoMovementInput(BaseModel):
+    product_id: int = Field(..., ge=1, description="Sample demo item ID.")
+    movement_type: str = Field(..., description="One of stock_in, stock_out, or adjustment.")
+    quantity: int = Field(..., gt=0, description="Quantity to add, remove, or set.")
+    reason: str = Field(default="demo adjustment", max_length=200)
+    confirm: bool = Field(default=False, description="Must be true for any movement write.")
+
+
+class AuditLogInput(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    message: str = Field(..., min_length=1, max_length=1000)
+
+
+def demo_item_lookup(query: str) -> list[dict[str, Any]]:
+    return list_products(search=query, limit=25)
 
 
 def demo_item_search(query: str) -> list[dict[str, Any]]:
-    return list_products(search=query, limit=25)
+    return demo_item_lookup(query)
 
 
 def demo_status(identifier: str | None = None) -> dict[str, Any]:
     if identifier:
-        product = find_product(identifier)
-        if not product:
+        item = find_product(identifier)
+        if not item:
             return {"found": False, "message": f"No sample demo item found for `{identifier}`."}
         return {
             "found": True,
-            "item": product,
-            "low_stock": product["stock_quantity"] > 0 and product["stock_quantity"] <= product["reorder_level"],
-            "out_of_stock": product["stock_quantity"] <= 0,
+            "item": item,
+            "low_stock": item["stock_quantity"] > 0 and item["stock_quantity"] <= item["reorder_level"],
+            "out_of_stock": item["stock_quantity"] <= 0,
         }
-    return {"low_stock": low_stock_products(), "out_of_stock": out_of_stock_products()}
+    return {
+        "found": True,
+        "low_stock": low_stock_products(),
+        "out_of_stock": out_of_stock_products(),
+    }
 
 
 def demo_partner_lookup(identifier: str) -> dict[str, Any]:
-    product = find_product(identifier)
-    if not product:
-        return {"found": False, "message": f"No sample item found for `{identifier}`."}
+    item = find_product(identifier)
+    if not item:
+        return {"found": False, "message": f"No sample demo item found for `{identifier}`."}
     return {
         "found": True,
-        "item": product["name"],
+        "item": item["name"],
         "partner": {
-            "name": product.get("supplier_name"),
-            "email": product.get("contact_email"),
-            "lead_time_days": product.get("lead_time_days"),
+            "name": item.get("supplier_name"),
+            "email": item.get("contact_email"),
+            "lead_time_days": item.get("lead_time_days"),
         },
     }
 
@@ -81,13 +124,14 @@ def demo_partner_lookup(identifier: str) -> dict[str, Any]:
 def demo_history(identifier: str | None = None, months: int = 6) -> dict[str, Any]:
     params: list[Any] = [f"-{months * 30} days"]
     product_clause = ""
-    product = None
+    item = None
     if identifier:
-        product = find_product(identifier)
-        if not product:
-            return {"found": False, "message": f"No sample item found for `{identifier}`."}
+        item = find_product(identifier)
+        if not item:
+            return {"found": False, "message": f"No sample demo item found for `{identifier}`."}
         product_clause = "AND s.product_id = ?"
-        params.append(product["id"])
+        params.append(item["id"])
+
     with get_connection() as connection:
         rows = connection.execute(
             f"""
@@ -101,7 +145,7 @@ def demo_history(identifier: str | None = None, months: int = 6) -> dict[str, An
             params,
         ).fetchall()
     records = rows_to_dicts(rows)
-    return {"found": bool(records), "item": product, "records": records}
+    return {"found": bool(records), "item": item, "records": records}
 
 
 def demo_forecast(identifier: str | None = None, months: int = 6) -> dict[str, Any]:
@@ -113,11 +157,11 @@ def demo_forecast(identifier: str | None = None, months: int = 6) -> dict[str, A
         }
 
     monthly: dict[str, int] = defaultdict(int)
-    product_totals: dict[str, int] = defaultdict(int)
+    item_totals: dict[str, int] = defaultdict(int)
     for record in history["records"]:
         month = record["sale_date"][:7]
         monthly[month] += int(record["quantity_sold"])
-        product_totals[record["product_name"]] += int(record["quantity_sold"])
+        item_totals[record["product_name"]] += int(record["quantity_sold"])
 
     ordered_months = sorted(monthly)
     values = [monthly[month] for month in ordered_months]
@@ -149,45 +193,53 @@ def demo_forecast(identifier: str | None = None, months: int = 6) -> dict[str, A
         "method": method,
         "explanation": explanation,
         "monthly_sales": dict(monthly),
-        "top_items": sorted(product_totals.items(), key=lambda item: item[1], reverse=True)[:5],
+        "top_items": sorted(item_totals.items(), key=lambda item: item[1], reverse=True)[:5],
     }
 
 
 def demo_reorder_recommendations(identifier: str | None = None) -> list[dict[str, Any]]:
     products = [find_product(identifier)] if identifier else low_stock_products() + out_of_stock_products()
     recommendations: list[dict[str, Any]] = []
-    for product in [item for item in products if item]:
-        forecast = demo_forecast(product["sku"], months=6)
-        predicted = forecast.get("predicted_quantity", 0) if forecast.get("found") else product["reorder_quantity"]
-        target = max(product["reorder_quantity"], int(predicted) + product["reorder_level"])
-        needed = max(0, target - product["stock_quantity"])
+    for item in [product for product in products if product]:
+        forecast = demo_forecast(item["sku"], months=6)
+        predicted = forecast.get("predicted_quantity", 0) if forecast.get("found") else item["reorder_quantity"]
+        target = max(item["reorder_quantity"], int(predicted) + item["reorder_level"])
+        needed = max(0, target - item["stock_quantity"])
         recommendations.append(
             {
-                "item_id": product["id"],
-                "sku": product["sku"],
-                "name": product["name"],
-                "current_stock": product["stock_quantity"],
-                "reorder_level": product["reorder_level"],
+                "item_id": item["id"],
+                "sku": item["sku"],
+                "name": item["name"],
+                "current_stock": item["stock_quantity"],
+                "reorder_level": item["reorder_level"],
                 "recommended_quantity": needed,
-                "supplier": product.get("supplier_name"),
+                "supplier": item.get("supplier_name"),
                 "reason": f"Target quantity {target} based on demo threshold policy and demo forecast.",
             }
         )
     return recommendations
 
 
-def add_demo_movement(product_id: int, movement_type: str, quantity: int, reason: str = "") -> dict[str, Any]:
+def add_demo_movement(
+    product_id: int,
+    movement_type: str,
+    quantity: int,
+    reason: str = "",
+    confirm: bool = False,
+) -> dict[str, Any]:
+    if not confirm:
+        raise ValueError("Human confirmation is required before writing a demo movement.")
     if movement_type not in {"stock_in", "stock_out", "adjustment"}:
         raise ValueError("movement_type must be stock_in, stock_out, or adjustment")
     if quantity <= 0:
         raise ValueError("quantity must be positive")
-    product = get_product(product_id)
-    if not product:
+    item = get_product(product_id)
+    if not item:
         raise ValueError(f"Demo item {product_id} not found")
 
     delta = quantity if movement_type == "stock_in" else -quantity
     if movement_type == "adjustment":
-        delta = quantity - product["stock_quantity"]
+        delta = quantity - item["stock_quantity"]
 
     with get_connection() as connection:
         connection.execute(
@@ -250,20 +302,164 @@ def write_demo_report(title: str = "AskMamma Operations Report") -> dict[str, An
     return {"path": str(path), "summary": f"Saved report to {path}"}
 
 
-def audit_log(session_id: str, message: str) -> None:
+def audit_log(session_id: str, message: str) -> dict[str, Any]:
+    payload = {"session_id": session_id, "message": message}
     with get_connection() as connection:
         connection.execute(
             """
             INSERT INTO agent_traces (session_id, user_input, selected_agent, final_answer, created_at)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (session_id, message, "AuditLogTool", message, utc_now()),
+            (session_id, redact_payload(message), "AuditLogTool", redact_payload(message), utc_now()),
         )
+    return {"saved": True, "entry": payload}
 
 
 def summarize_tools_for_trace(tool_outputs: list[Any]) -> str:
     summaries = []
     for output in tool_outputs:
-        text = json.dumps(output, default=str)
+        text = json.dumps(redact_payload(output), default=str)
         summaries.append(text[:500])
     return json.dumps(summaries)
+
+
+def tool_registry() -> list[ToolCall]:
+    return [
+        ToolCall(
+            name="DemoItemLookupTool",
+            description="Search sample AskMamma demo items by name, SKU, category, partner, or description.",
+            input_schema=DemoItemLookupInput.model_json_schema(),
+            output_schema={"type": "array", "items": {"type": "object"}},
+        ),
+        ToolCall(
+            name="DemoAvailabilityTool",
+            description="Return quantity, threshold, low-availability status, and unavailable status for sample demo items.",
+            input_schema=DemoAvailabilityInput.model_json_schema(),
+            output_schema={"type": "object"},
+        ),
+        ToolCall(
+            name="DemoPartnerLookupTool",
+            description="Find partner information for a sample demo item.",
+            input_schema=DemoPartnerLookupInput.model_json_schema(),
+            output_schema={"type": "object"},
+        ),
+        ToolCall(
+            name="DemoHistoryTool",
+            description="Retrieve sample history for a demo item or category.",
+            input_schema=DemoHistoryInput.model_json_schema(),
+            output_schema={"type": "object"},
+        ),
+        ToolCall(
+            name="DemoForecastTool",
+            description="Predict demo demand using moving average and trend adjustment based on sample history.",
+            input_schema=DemoForecastInput.model_json_schema(),
+            output_schema={"type": "object"},
+        ),
+        ToolCall(
+            name="DemoRecommendationTool",
+            description="Recommend sample replenishment quantities from demo availability, thresholds, history, and lead time.",
+            input_schema=DemoRecommendationInput.model_json_schema(),
+            output_schema={"type": "array", "items": {"type": "object"}},
+        ),
+        ToolCall(
+            name="DocumentSearchTool",
+            description="Search indexed AskMamma documents using local embedding retrieval.",
+            input_schema=DocumentSearchInput.model_json_schema(),
+            output_schema={"type": "object"},
+        ),
+        ToolCall(
+            name="DemoReportWriterTool",
+            description="Generate a sample AskMamma operations report and save it under outputs/reports.",
+            input_schema=DemoReportInput.model_json_schema(),
+            output_schema={"type": "object"},
+        ),
+        ToolCall(
+            name="DemoMovementTool",
+            description="Record sample stock-in, stock-out, or adjustment movement after explicit human confirmation.",
+            input_schema=DemoMovementInput.model_json_schema(),
+            output_schema={"type": "object"},
+        ),
+        ToolCall(
+            name="AuditLogTool",
+            description="Persist a sanitized local audit record for the current AskMamma session.",
+            input_schema=AuditLogInput.model_json_schema(),
+            output_schema={"type": "object"},
+        ),
+    ]
+
+
+def langchain_tools() -> list[StructuredTool]:
+    return [
+        StructuredTool.from_function(
+            name="DemoItemLookupTool",
+            description="Search sample AskMamma demo items by name, SKU, category, partner, or description.",
+            func=demo_item_lookup,
+            args_schema=DemoItemLookupInput,
+        ),
+        StructuredTool.from_function(
+            name="DemoAvailabilityTool",
+            description="Return quantity, threshold, low-availability status, and unavailable status for sample demo items.",
+            func=demo_status,
+            args_schema=DemoAvailabilityInput,
+        ),
+        StructuredTool.from_function(
+            name="DemoPartnerLookupTool",
+            description="Find partner information for a sample demo item.",
+            func=demo_partner_lookup,
+            args_schema=DemoPartnerLookupInput,
+        ),
+        StructuredTool.from_function(
+            name="DemoHistoryTool",
+            description="Retrieve sample history for a demo item or category.",
+            func=demo_history,
+            args_schema=DemoHistoryInput,
+        ),
+        StructuredTool.from_function(
+            name="DemoForecastTool",
+            description="Predict demo demand using moving average and trend adjustment based on sample history.",
+            func=demo_forecast,
+            args_schema=DemoForecastInput,
+        ),
+        StructuredTool.from_function(
+            name="DemoRecommendationTool",
+            description="Recommend sample replenishment quantities from demo availability, thresholds, history, and lead time.",
+            func=demo_reorder_recommendations,
+            args_schema=DemoRecommendationInput,
+        ),
+        StructuredTool.from_function(
+            name="DocumentSearchTool",
+            description="Search indexed AskMamma documents using local embedding retrieval.",
+            func=document_search,
+            args_schema=DocumentSearchInput,
+        ),
+        StructuredTool.from_function(
+            name="DemoReportWriterTool",
+            description="Generate a sample AskMamma operations report and save it under outputs/reports.",
+            func=write_demo_report,
+            args_schema=DemoReportInput,
+        ),
+        StructuredTool.from_function(
+            name="DemoMovementTool",
+            description="Record sample stock-in, stock-out, or adjustment movement after explicit human confirmation.",
+            func=add_demo_movement,
+            args_schema=DemoMovementInput,
+        ),
+        StructuredTool.from_function(
+            name="AuditLogTool",
+            description="Persist a sanitized local audit record for the current AskMamma session.",
+            func=audit_log,
+            args_schema=AuditLogInput,
+        ),
+    ]
+
+
+def get_tool_by_name(name: str) -> StructuredTool:
+    for tool in langchain_tools():
+        if tool.name == name:
+            return tool
+    raise KeyError(f"Unknown tool `{name}`")
+
+
+def invoke_named_tool(name: str, arguments: dict[str, Any]) -> Any:
+    tool = get_tool_by_name(name)
+    return tool.invoke(arguments)

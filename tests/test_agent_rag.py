@@ -1,5 +1,5 @@
 from agents.orchestrator import get_session_messages, invoke_agent
-from rag.retrieval import document_search
+from rag.retrieval import document_search, reindex_documents
 from scripts.seed_data import seed
 
 
@@ -7,21 +7,26 @@ def setup_module():
     seed()
 
 
-def test_greeting_uses_no_tools():
+def test_greeting_uses_supervisor_only():
     result = invoke_agent("Hi", session_id="test-greeting")
     assert result["selected_agent"] == "SupervisorAgent"
     assert result["tools_called"] == []
+    assert result["route_path"] == ["SupervisorAgent"]
 
 
 def test_demo_low_availability_routes_to_action_tool():
     result = invoke_agent("Which sample demo items are low in availability?", session_id="test-low-stock")
     assert result["selected_agent"] == "AskMammaActionAgent"
     assert "DemoAvailabilityTool" in result["tools_called"]
+    assert "QualityReviewAgent" in result["route_path"]
 
 
-def test_document_search_finds_return_policy():
+def test_document_search_uses_vector_retriever():
+    reindex_summary = reindex_documents()
+    assert reindex_summary["vector_store"]["indexed_chunks"] > 0
     result = document_search("return policy unopened demo items")
     assert result["found"] is True
+    assert result["retriever"] == "faiss+local-hash-embeddings"
     assert any("return_policy" in item["file_name"] for item in result["results"])
 
 
@@ -31,3 +36,13 @@ def test_memory_persists_messages():
     messages = get_session_messages(session_id)
     assert len(messages) >= 2
     assert messages[-1]["role"] == "assistant"
+
+
+def test_forecast_route_has_intermediate_steps():
+    result = invoke_agent(
+        "Based on the sample demo history, what demand do you expect next month for Packing Tape?",
+        session_id="test-forecast",
+    )
+    assert result["selected_agent"] == "ForecastAgent"
+    assert "DemoForecastTool" in result["tools_called"]
+    assert result["intermediate_steps"]

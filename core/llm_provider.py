@@ -1,13 +1,14 @@
-"""Provider abstraction for optional LLM-backed answers."""
+"""Provider abstraction for optional LLM-backed answers and agents."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import requests
 
 from core import config
+from core.observability import configure_langsmith
 
 
 class LLMProvider(Protocol):
@@ -16,10 +17,20 @@ class LLMProvider(Protocol):
     def generate(self, prompt: str) -> str:
         ...
 
+    def available(self) -> bool:
+        ...
+
 
 @dataclass
 class OllamaProvider:
     name: str = "ollama"
+
+    def available(self) -> bool:
+        try:
+            response = requests.get(f"{config.OLLAMA_BASE_URL.rstrip('/')}/api/tags", timeout=3)
+            return response.ok
+        except requests.RequestException:
+            return False
 
     def generate(self, prompt: str) -> str:
         try:
@@ -41,18 +52,28 @@ class OllamaProvider:
 class OpenAIProvider:
     name: str = "openai"
 
+    def available(self) -> bool:
+        return bool(config.OPENAI_API_KEY)
+
     def generate(self, prompt: str) -> str:
         if not config.OPENAI_API_KEY:
             raise RuntimeError("OPENAI_API_KEY is not configured.")
         from langchain_openai import ChatOpenAI
 
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, api_key=config.OPENAI_API_KEY)
+        llm = ChatOpenAI(model=config.OPENAI_MODEL, temperature=0, api_key=config.OPENAI_API_KEY)
         return llm.invoke(prompt).content
 
 
 @dataclass
 class AzureOpenAIProvider:
     name: str = "azure"
+
+    def available(self) -> bool:
+        return bool(
+            config.AZURE_OPENAI_API_KEY
+            and config.AZURE_OPENAI_ENDPOINT
+            and config.AZURE_OPENAI_DEPLOYMENT
+        )
 
     def generate(self, prompt: str) -> str:
         missing = [
@@ -72,6 +93,8 @@ class AzureOpenAIProvider:
         llm = AzureChatOpenAI(
             azure_deployment=config.AZURE_OPENAI_DEPLOYMENT,
             api_version=config.AZURE_OPENAI_API_VERSION,
+            azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
+            api_key=config.AZURE_OPENAI_API_KEY,
             temperature=0,
         )
         return llm.invoke(prompt).content
@@ -83,3 +106,31 @@ def get_llm_provider() -> LLMProvider:
     if config.LLM_PROVIDER in {"azure", "azure_openai"}:
         return AzureOpenAIProvider()
     return OllamaProvider()
+
+
+def get_chat_model() -> Any | None:
+    """Return a LangChain chat model when tool-calling is supported."""
+
+    configure_langsmith()
+
+    if config.LLM_PROVIDER == "openai" and config.OPENAI_API_KEY:
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(model=config.OPENAI_MODEL, temperature=0, api_key=config.OPENAI_API_KEY)
+
+    if config.LLM_PROVIDER in {"azure", "azure_openai"} and AzureOpenAIProvider().available():
+        from langchain_openai import AzureChatOpenAI
+
+        return AzureChatOpenAI(
+            azure_deployment=config.AZURE_OPENAI_DEPLOYMENT,
+            api_version=config.AZURE_OPENAI_API_VERSION,
+            azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
+            api_key=config.AZURE_OPENAI_API_KEY,
+            temperature=0,
+        )
+
+    return None
+
+
+def supports_langchain_agents() -> bool:
+    return get_chat_model() is not None

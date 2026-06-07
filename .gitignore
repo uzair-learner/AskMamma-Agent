@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+!.env.template
 
 # Python bytecode and caches
 __pycache__/
@@ -51,6 +52,7 @@ desktop.ini
 
 # Node/npm local artifacts
 node_modules/
+frontend/dist/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

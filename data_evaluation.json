@@ -1,44 +1,58 @@
 [
   {
     "question": "Hi",
-    "expected_answer_summary": "friendly greeting",
+    "expected_answer_summary": "friendly greeting and capabilities overview",
+    "answer_must_include": ["help", "AskMamma"],
     "expected_tools": [],
-    "expected_agent_route": "SupervisorAgent"
+    "expected_agent_route": "SupervisorAgent",
+    "expected_route_path_contains": ["SupervisorAgent"]
   },
   {
     "question": "In the sample demo catalog, which items are low in availability?",
     "expected_answer_summary": "list low-availability demo items",
+    "answer_must_include": ["sample demo", "availability"],
     "expected_tools": ["DemoAvailabilityTool"],
-    "expected_agent_route": "AskMammaActionAgent"
+    "expected_agent_route": "AskMammaActionAgent",
+    "expected_route_path_contains": ["SupervisorAgent", "AskMammaActionAgent", "QualityReviewAgent"]
   },
   {
     "question": "Which demo partner provides USB-C Cable 2m?",
     "expected_answer_summary": "partner name and lead time for the sample demo item",
+    "answer_must_include": ["supplied by", "lead time"],
     "expected_tools": ["DemoPartnerLookupTool"],
-    "expected_agent_route": "AskMammaActionAgent"
+    "expected_agent_route": "AskMammaActionAgent",
+    "expected_route_path_contains": ["SupervisorAgent", "AskMammaActionAgent", "QualityReviewAgent"]
   },
   {
     "question": "Based on the sample demo history, what demand do you expect next month for Packing Tape?",
     "expected_answer_summary": "numeric forecast with explanation",
+    "answer_must_include": ["expected next-month demand", "units"],
     "expected_tools": ["DemoHistoryTool", "DemoForecastTool"],
-    "expected_agent_route": "ForecastAgent"
+    "expected_agent_route": "ForecastAgent",
+    "expected_route_path_contains": ["SupervisorAgent", "ForecastAgent", "QualityReviewAgent"]
   },
   {
     "question": "Search uploaded documents and tell me the return policy.",
     "expected_answer_summary": "return policy with source",
+    "answer_must_include": ["document references", "return_policy"],
     "expected_tools": ["DocumentSearchTool"],
-    "expected_agent_route": "DocumentAgent"
+    "expected_agent_route": "DocumentAgent",
+    "expected_route_path_contains": ["SupervisorAgent", "DocumentAgent", "QualityReviewAgent"]
   },
   {
     "question": "Generate a short AskMamma report.",
     "expected_answer_summary": "saved report path",
+    "answer_must_include": ["Saved report", "recommendations"],
     "expected_tools": ["DemoReportWriterTool"],
-    "expected_agent_route": "ReportAgent"
+    "expected_agent_route": "ReportAgent",
+    "expected_route_path_contains": ["SupervisorAgent", "ReportAgent", "QualityReviewAgent"]
   },
   {
     "question": "What about its demo partner?",
     "expected_answer_summary": "uses prior demo item context when available",
+    "answer_must_include": ["supplied by", "lead time"],
     "expected_tools": ["DemoPartnerLookupTool"],
-    "expected_agent_route": "AskMammaActionAgent"
+    "expected_agent_route": "AskMammaActionAgent",
+    "expected_route_path_contains": ["SupervisorAgent", "AskMammaActionAgent", "QualityReviewAgent"]
   }
 ]

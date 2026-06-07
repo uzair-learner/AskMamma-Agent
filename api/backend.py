@@ -2,14 +2,26 @@
 
 from __future__ import annotations
 
+import time
+from collections import defaultdict, deque
+from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
-from core import config
 from agents.orchestrator import get_recent_traces, get_session_messages, invoke_agent
+from askmamma.tools import (
+    add_demo_movement,
+    demo_forecast,
+    invoke_named_tool,
+    tool_registry,
+    write_demo_report,
+)
+from core import config
+from core.observability import configure_langsmith, safe_error_message
 from db.database import (
     create_product,
     dashboard_stats,
@@ -22,19 +34,15 @@ from db.database import (
     update_product,
 )
 from rag.retrieval import document_search, reindex_documents, save_uploaded_document
-from askmamma.tools import (
-    add_demo_movement,
-    demo_forecast,
-    demo_reorder_recommendations,
-    tool_registry,
-    write_demo_report,
-)
 
 
 app = FastAPI(
     title="AskMamma Agent API",
-    description="Local AI agent demo with FastAPI, Streamlit, RAG, tool calling, memory, tracing, tests, SQLite runtime state, and clearly labeled sample demo data.",
-    version="1.0.0",
+    description=(
+        "Local AI agent demo with FastAPI, Streamlit, LangGraph routing, LangChain tool calling, "
+        "embedding-backed RAG, memory, tracing, tests, SQLite runtime state, and clearly labeled sample demo data."
+    ),
+    version="2.0.0",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -43,6 +51,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+RATE_LIMIT_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
+FRONTEND_DIST_DIR = config.ROOT_DIR / "frontend" / "dist"
 
 
 class DemoItemPayload(BaseModel):
@@ -58,12 +69,14 @@ class DemoItemPayload(BaseModel):
     reorder_quantity: int
     location: str | None = None
     expiry_date: str | None = None
+    confirm: bool = False
 
 
 class DemoAvailabilityPayload(BaseModel):
     product_id: int
     quantity: int = Field(gt=0)
     reason: str = "restock"
+    confirm: bool = False
 
 
 class DemoForecastPayload(BaseModel):
@@ -72,26 +85,57 @@ class DemoForecastPayload(BaseModel):
 
 
 class ChatPayload(BaseModel):
-    message: str
+    message: str = Field(..., min_length=1, max_length=4000)
     session_id: str | None = None
 
 
 class TaskPayload(BaseModel):
-    task_id: str
-    message: str
+    task_id: str = Field(..., min_length=1)
+    message: str = Field(..., min_length=1, max_length=4000)
     from_agent: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     status: str = "submitted"
 
 
 class DocumentSearchPayload(BaseModel):
-    query: str
-    limit: int = 5
+    query: str = Field(..., min_length=1)
+    limit: int = Field(default=5, ge=1, le=10)
+
+
+class MCPRpcPayload(BaseModel):
+    jsonrpc: str = "2.0"
+    id: str | int | None = None
+    method: str
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 @app.on_event("startup")
 def startup() -> None:
     initialize_database()
+    configure_langsmith()
+
+
+def _enforce_rate_limit(key: str) -> None:
+    window = RATE_LIMIT_BUCKETS[key]
+    now = time.time()
+    while window and now - window[0] > 60:
+        window.popleft()
+    if len(window) >= config.RATE_LIMIT_PER_MINUTE:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded. Please retry in a minute.")
+    window.append(now)
+
+
+def _request_key(request: Request, suffix: str) -> str:
+    client = request.client.host if request.client else "local"
+    return f"{client}:{suffix}"
+
+
+def _rpc_success(request_id: str | int | None, result: Any) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+
+def _rpc_error(request_id: str | int | None, code: int, message: str) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
 
 
 @app.get("/health")
@@ -119,12 +163,16 @@ def demo_item(item_id: int) -> dict[str, Any]:
 
 @app.post("/demo/items", summary="Create a sample demo item")
 def demo_item_create(payload: DemoItemPayload) -> dict[str, Any]:
-    return create_product(payload.model_dump())
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="Set confirm=true to create or overwrite demo item data.")
+    return create_product(payload.model_dump(exclude={"confirm"}))
 
 
 @app.put("/demo/items/{item_id}", summary="Update a sample demo item")
-def demo_item_update(item_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-    item = update_product(item_id, payload)
+def demo_item_update(item_id: int, payload: DemoItemPayload) -> dict[str, Any]:
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="Set confirm=true to update demo item data.")
+    item = update_product(item_id, payload.model_dump(exclude={"confirm"}))
     if not item:
         raise HTTPException(status_code=404, detail="Demo item not found")
     return item
@@ -149,7 +197,10 @@ def demo_availability_out() -> list[dict[str, Any]]:
 
 @app.post("/demo/availability/restock", summary="Record sample demo availability replenishment")
 def demo_availability_restock(payload: DemoAvailabilityPayload) -> dict[str, Any]:
-    return add_demo_movement(payload.product_id, "stock_in", payload.quantity, payload.reason)
+    try:
+        return add_demo_movement(payload.product_id, "stock_in", payload.quantity, payload.reason, payload.confirm)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=safe_error_message(exc)) from exc
 
 
 @app.post("/demo/forecast", summary="Run a sample demo forecast")
@@ -158,12 +209,14 @@ def demo_forecast_run(payload: DemoForecastPayload) -> dict[str, Any]:
 
 
 @app.post("/agent/chat")
-def agent_chat(payload: ChatPayload) -> dict[str, Any]:
+def agent_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
+    _enforce_rate_limit(_request_key(request, "agent-chat"))
     return invoke_agent(payload.message, payload.session_id)
 
 
 @app.post("/agent/run-task")
-def agent_run_task(payload: ChatPayload) -> dict[str, Any]:
+def agent_run_task(payload: ChatPayload, request: Request) -> dict[str, Any]:
+    _enforce_rate_limit(_request_key(request, "agent-run-task"))
     return invoke_agent(payload.message, payload.session_id)
 
 
@@ -187,8 +240,26 @@ def mcp_tools() -> list[dict[str, Any]]:
     return agent_tools()
 
 
+@app.post("/mcp/rpc")
+def mcp_rpc(payload: MCPRpcPayload, request: Request) -> dict[str, Any]:
+    _enforce_rate_limit(_request_key(request, "mcp-rpc"))
+    try:
+        if payload.method == "tools/list":
+            return _rpc_success(payload.id, agent_tools())
+        if payload.method == "tools/call":
+            tool_name = payload.params.get("name")
+            arguments = payload.params.get("arguments", {})
+            if not tool_name:
+                return _rpc_error(payload.id, -32602, "Missing `name` for tools/call.")
+            return _rpc_success(payload.id, invoke_named_tool(tool_name, arguments))
+        return _rpc_error(payload.id, -32601, f"Unknown method `{payload.method}`.")
+    except Exception as exc:
+        return _rpc_error(payload.id, -32000, safe_error_message(exc))
+
+
 @app.post("/agent/tasks")
-def agent_tasks(payload: TaskPayload) -> dict[str, Any]:
+def agent_tasks(payload: TaskPayload, request: Request) -> dict[str, Any]:
+    _enforce_rate_limit(_request_key(request, "agent-tasks"))
     result = invoke_agent(payload.message, payload.task_id)
     return {
         "task_id": payload.task_id,
@@ -234,17 +305,58 @@ def reports_demo_forecast() -> dict[str, Any]:
 def agent_card() -> dict[str, Any]:
     return {
         "name": "AskMamma Assistant",
-        "description": "AI-powered AskMamma agent with tools, memory, RAG, demo/sample data, reports, and traces.",
-        "version": "1.0.0",
+        "description": "AI-powered AskMamma agent with LangGraph routing, LangChain tools, embedding-backed RAG, memory, demo/sample data, reports, and traces.",
+        "version": "2.0.0",
         "endpoint": "/agent/chat",
-        "supported_input_modes": ["text", "task"],
-        "supported_output_modes": ["text", "json", "markdown"],
-        "authentication": "none for local development",
+        "capabilities": {
+            "tool_calling": True,
+            "rag": True,
+            "memory": True,
+            "multi_agent": True,
+            "task_execution": True,
+            "mcp_adapter": True,
+            "langsmith_tracing_optional": bool(config.LANGSMITH_API_KEY),
+        },
+        "authentication": {"type": "none", "notes": "local development only"},
         "skills": [
             "demo_item_lookup",
             "demo_availability_analysis",
             "demo_forecast",
             "document_search",
             "demo_report_generation",
+            "quality_review",
         ],
+        "supported_input_modes": ["text", "task", "jsonrpc"],
+        "supported_output_modes": ["text", "json", "markdown"],
     }
+
+
+def _frontend_path(path: str) -> Path:
+    return FRONTEND_DIST_DIR / path
+
+
+@app.get("/", include_in_schema=False, response_model=None)
+def frontend_index() -> Response:
+    index_path = _frontend_path("index.html")
+    if index_path.exists():
+        return FileResponse(index_path)
+    return HTMLResponse(
+        "<h1>AskMamma frontend not built yet.</h1><p>Run the launcher so the React app is built before startup.</p>",
+        status_code=503,
+    )
+
+
+@app.get("/{full_path:path}", include_in_schema=False, response_model=None)
+def frontend_assets(full_path: str) -> Response:
+    requested = _frontend_path(full_path)
+    if requested.is_file():
+        return FileResponse(requested)
+
+    index_path = _frontend_path("index.html")
+    if index_path.exists():
+        return FileResponse(index_path)
+
+    return HTMLResponse(
+        "<h1>AskMamma frontend not built yet.</h1><p>Run the launcher so the React app is built before startup.</p>",
+        status_code=503,
+    )

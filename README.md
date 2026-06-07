@@ -1,86 +1,137 @@
 # AskMamma Agent System
 
-AskMamma-Agent is a local AI agent system demonstrating:
+AskMamma-Agent is a local AI agent demo that combines:
 - FastAPI backend
 - Streamlit UI
-- RAG/document retrieval
-- tool/action calling
-- memory
-- tracing
-- tests
-- local SQLite runtime state
+- LangGraph multi-agent orchestration
+- LangChain tool calling
+- embedding-backed RAG over local documents
+- SQLite memory and trace storage
+- optional LangSmith tracing
+- automated tests and evaluation
 
-The repository includes seeded sample demo item and history data used only for demonstration of availability checks, partner lookup, forecasting, and report generation. That sample data is not the core identity of the project.
+The seeded catalog, availability, partner, movement, forecast, and report flows are sample demo data. They exist to demonstrate agent patterns and are not the core identity of the project.
 
 ## Architecture
 
+In simple terms:
+
 ```text
 Streamlit UI
-  -> FastAPI backend
-    -> SupervisorAgent
-      -> AskMammaActionAgent -> AskMamma tools -> SQLite
-      -> ForecastAgent -> demo history + forecast tools -> SQLite
-      -> DocumentAgent -> local RAG search -> document_chunks
-      -> ReportAgent -> markdown reports -> outputs/reports
-      -> QualityReviewAgent -> final answer checks
-    -> traces + chat memory -> SQLite
+  -> FastAPI API
+    -> LangGraph supervisor
+      -> AskMammaActionAgent
+      -> ForecastAgent
+      -> DocumentAgent
+      -> ReportAgent
+      -> QualityReviewAgent
+    -> LangChain tools
+    -> SQLite state + local trace fallback
+    -> FAISS vector store for document retrieval
+    -> Optional LangSmith tracing
 ```
 
-The core agent is tool-first and works without paid model keys. Ollama, OpenAI, and Azure OpenAI are configurable through `.env` for future LLM-backed response refinement.
+What each layer does:
+- `api/backend.py`: public API, task endpoints, MCP-style adapter, and metadata endpoints
+- `agents/orchestrator.py`: LangGraph routing plus deterministic fallback when no paid chat model is configured
+- `askmamma/tools.py`: typed tools with clear schemas for item lookup, availability, partner lookup, forecast, recommendations, document search, reporting, and audit logging
+- `rag/retrieval.py`: document ingestion, chunking, local embeddings, and FAISS retrieval
+- `db/database.py`: SQLite schema for demo items, memory, traces, and documents
+- `ui/app.py`: Streamlit dashboard and chat interface
 
 ## Folder Structure
 
 ```text
 api/backend.py            FastAPI backend
 ui/app.py                 Streamlit dashboard/chat frontend
-agents/orchestrator.py    Hierarchical multi-agent orchestration
+agents/orchestrator.py    LangGraph multi-agent orchestration
+askmamma/tools.py         LangChain-compatible AskMamma demo tools
+rag/retrieval.py          Document ingestion and embedding retrieval
 db/database.py            SQLite schema and CRUD helpers
-askmamma/tools.py         Typed AskMamma demo tools, forecast, report, movement, audit tools
-rag/retrieval.py          Document ingestion and local retrieval
-core/llm_provider.py      Ollama/OpenAI/Azure provider abstraction
-core/config.py            Environment configuration
+core/llm_provider.py      OpenAI, Azure OpenAI, and Ollama provider config
+core/observability.py     LangSmith setup and redaction helpers
 scripts/seed_data.py      Demo data and document indexing
-scripts/evaluate_agent.py Route/tool evaluation
-tests/                    API, database, tools, RAG, memory, routing tests
+scripts/evaluate_agent.py Route/tool/answer/intermediate-step evaluation
+tests/                    API, RAG, routing, tool, MCP, and evaluation tests
 documents/                Sample knowledge-base documents
-outputs/reports/          Generated reports
 ```
 
-## Install
+## One-Command Start
+
+From PowerShell, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start_all.ps1
+```
+
+Or, for the simplest one-command launcher from the project root:
+
+```powershell
+.\start.cmd
+```
+
+This script:
+- creates or repairs `.venv`
+- upgrades `pip`
+- installs `requirements.txt`
+- installs frontend dependencies when needed
+- builds the React frontend
+- creates `.env` from `.env.example` if needed
+- seeds the local database and vector store
+- starts the FastAPI backend
+- opens `http://127.0.0.1:8000` in your browser
+
+Open:
+
+```text
+http://localhost:8501
+```
+
+## Manual Setup
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-copy .env.template .env
+copy .env.example .env
 ```
 
-Seed the local database and index sample documents:
+Seed the local database and build the vector index:
 
 ```powershell
 python scripts/seed_data.py
 ```
 
-The seed script creates a reproducible local demo database with 12 sample partners, a broad AskMamma sample catalog, 18 months of demo history, movement records, and indexed knowledge-base documents. The generated SQLite file is runtime data and is intentionally ignored by Git.
+## Environment
 
-## Run Ollama
+The tracked template is `.env.example`.
 
-Ollama is optional for the current deterministic tool-backed agent, but the provider is configured for local-first LLM support.
-
-```powershell
-ollama serve
-ollama pull llama3.1
-```
-
-In `.env`:
+Important settings:
 
 ```text
+APP_ENV=development
+DATABASE_URL=sqlite:///askmamma.db
 LLM_PROVIDER=ollama
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=llama3.1
+OPENAI_MODEL=gpt-4o-mini
+
+OPENAI_API_KEY=
+AZURE_OPENAI_API_KEY=
+AZURE_OPENAI_ENDPOINT=
+AZURE_OPENAI_DEPLOYMENT=
+AZURE_OPENAI_API_VERSION=2024-10-21
+
+LANGSMITH_API_KEY=
+LANGSMITH_ENDPOINT=https://api.smith.langchain.com
+LANGSMITH_PROJECT=askmamma-agent
+LANGSMITH_TRACING=true
 ```
 
-To switch providers, set `LLM_PROVIDER=openai` with `OPENAI_API_KEY`, or `LLM_PROVIDER=azure` with Azure OpenAI settings.
+Provider behavior:
+- `LLM_PROVIDER=openai`: uses LangChain `ChatOpenAI` if `OPENAI_API_KEY` is set
+- `LLM_PROVIDER=azure`: uses LangChain `AzureChatOpenAI` if Azure settings are set
+- `LLM_PROVIDER=ollama`: keeps local Ollama generation config available, while the agent falls back to deterministic graph behavior when no tool-calling chat model is configured
 
 ## Run Backend
 
@@ -94,71 +145,53 @@ Health check:
 Invoke-RestMethod http://localhost:8000/health
 ```
 
-## Run Frontend
+## Build Frontend
 
-In another terminal:
+The React app lives in `frontend/` and is served by FastAPI after build.
+
+Build it with:
 
 ```powershell
-python -m streamlit run ui/app.py --server.port 8501
+cd frontend
+npm install
+npm run build
 ```
 
 Open:
 
 ```text
-http://localhost:8501
-```
-
-Or start both with:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/start_all.ps1
+http://127.0.0.1:8000
 ```
 
 ## Key API Endpoints
 
-- `GET /health`
-- `GET /dashboard`
+- `POST /agent/chat`
+- `POST /agent/run-task`
+- `POST /agent/tasks`
+- `GET /agent/tools`
+- `GET /agent/traces`
+- `GET /agent/sessions/{session_id}`
 - `GET /demo/items`
-- `GET /demo/items/{id}`
-- `POST /demo/items`
-- `PUT /demo/items/{id}`
-- `DELETE /demo/items/{id}?confirm=true`
 - `GET /demo/availability/low`
 - `GET /demo/availability/out`
 - `POST /demo/availability/restock`
 - `POST /demo/forecast`
-- `POST /agent/chat`
-- `POST /agent/run-task`
-- `GET /agent/sessions/{session_id}`
-- `GET /agent/traces`
 - `POST /documents/upload`
 - `POST /documents/reindex`
 - `POST /documents/search`
-- `GET /reports/askmamma`
-- `GET /reports/demo`
-- `GET /reports/demo-forecast`
-- `GET /.well-known/agent-card.json`
-- `GET /agent/tools`
 - `GET /mcp/tools`
-- `POST /agent/tasks`
+- `POST /mcp/rpc`
+- `GET /.well-known/agent-card.json`
 
-## Test Chat
+## RAG
 
-Try:
+The document pipeline now uses:
+- `RecursiveCharacterTextSplitter`
+- local deterministic embeddings
+- `FAISS`
+- local vector store persistence in `vector_store/`
 
-```text
-Hi
-Which sample demo items are low in availability?
-Do we have USB-C Cable 2m available in the sample demo catalog?
-Which demo partner provides that item?
-Based on the sample demo history, what demand do you expect next month for Packing Tape?
-Search uploaded documents and tell me the return policy.
-Generate a short AskMamma report.
-```
-
-## Documents
-
-Sample docs live in `documents/`. Reindex them:
+Reindex documents:
 
 ```powershell
 Invoke-RestMethod -Method Post http://localhost:8000/documents/reindex
@@ -174,54 +207,91 @@ Invoke-RestMethod -Method Post http://localhost:8000/documents/search `
 
 Upload supports `.pdf`, `.txt`, `.md`, and `.csv`.
 
-## Traces
+## MCP and Agent Metadata
 
-Every agent run stores:
+This project includes a lightweight MCP-style adapter:
+- `GET /mcp/tools` lists available tools
+- `POST /mcp/rpc` supports JSON-RPC style `tools/list` and `tools/call`
 
-- session ID
-- user input
-- selected agent
-- tools called
-- tool inputs
-- tool output summaries
-- final answer
-- latency
-- errors
-- timestamp
+The agent card at `/.well-known/agent-card.json` includes:
+- name
+- description
+- version
+- endpoint
+- capabilities
+- authentication
+- skills
+- supported input modes
+- supported output modes
 
-View traces:
+## LangSmith
 
-```powershell
-Invoke-RestMethod http://localhost:8000/agent/traces
-```
+LangSmith tracing is optional.
 
-The Streamlit UI also has a `View traces` button.
+If you set:
+- `LANGSMITH_API_KEY`
+- `LANGSMITH_ENDPOINT`
+- `LANGSMITH_PROJECT`
+
+the app enables LangSmith tracing automatically. If not configured, the project still stores local traces in SQLite.
+
+## Demo-Only Features
+
+These are intentionally demo/sample features:
+- seeded item catalog and availability data
+- partner and movement records
+- historical sales and forecast examples
+- reorder recommendations
+- generated markdown reports
+
+They are useful for demonstrating agent tooling, not for representing a production AskMamma business domain.
+
+## Safety and Guardrails
+
+The backend includes:
+- Pydantic input validation
+- explicit confirmation for destructive writes and movement writes
+- in-memory rate limiting for agent and MCP endpoints
+- secret redaction in stored traces
+- clear demo/sample labels in tool and answer wording
+- local SQLite trace fallback when LangSmith is not configured
 
 ## Evaluation
+
+Run the evaluation suite:
 
 ```powershell
 python scripts/evaluate_agent.py
 ```
 
-The evaluation checks greetings, demo low-availability routing, partner lookup, forecasting, document search, report generation, and memory follow-ups.
+It checks:
+- final answer quality
+- selected route
+- expected tools called
+- route path and intermediate steps
 
 ## Tests
+
+Run:
 
 ```powershell
 python -m pytest -q
 ```
 
-## Docker
-
-```powershell
-docker compose up
-```
+Coverage includes:
+- embedding-backed RAG retrieval
+- tool invocation
+- memory persistence
+- LangGraph routing
+- API endpoints
+- MCP/A2A-style metadata endpoints
+- evaluation script behavior
 
 ## Troubleshooting
 
-- Backend not reachable: start `uvicorn api.backend:app --port 8000`.
-- Frontend error: confirm backend health at `http://localhost:8000/health`.
-- Empty demo items: run `python scripts/seed_data.py`.
-- Document search has no results: run `POST /documents/reindex`.
-- Ollama error: run `ollama serve` and `ollama pull llama3.1`.
-- Delete demo item blocked: pass `confirm=true`; destructive actions require explicit confirmation.
+- Backend not reachable: start `uvicorn api.backend:app --port 8000`
+- Empty demo items or missing vectors: run `python scripts/seed_data.py`
+- Document results missing: run `POST /documents/reindex`
+- Ollama not reachable: run `ollama serve` and `ollama pull llama3.1`
+- LangSmith not tracing: verify `LANGSMITH_API_KEY`, `LANGSMITH_ENDPOINT`, and `LANGSMITH_PROJECT`
+- Demo movement blocked: pass `"confirm": true`
