@@ -345,6 +345,25 @@ def out_of_stock_products() -> list[dict[str, Any]]:
     return rows_to_dicts(rows)
 
 
+def list_suppliers() -> list[dict[str, Any]]:
+    initialize_database()
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                s.*,
+                COUNT(p.id) AS product_count,
+                COALESCE(SUM(CASE WHEN p.stock_quantity <= 0 THEN 1 ELSE 0 END), 0) AS out_of_stock_count,
+                COALESCE(SUM(CASE WHEN p.stock_quantity > 0 AND p.stock_quantity <= p.reorder_level THEN 1 ELSE 0 END), 0) AS low_stock_count
+            FROM suppliers s
+            LEFT JOIN products p ON p.supplier_id = s.id
+            GROUP BY s.id
+            ORDER BY s.name
+            """
+        ).fetchall()
+    return rows_to_dicts(rows)
+
+
 def dashboard_stats() -> dict[str, Any]:
     initialize_database()
     with get_connection() as connection:

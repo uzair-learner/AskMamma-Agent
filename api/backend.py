@@ -17,6 +17,7 @@ from agents.orchestrator import get_recent_traces, get_session_messages, invoke_
 from askmamma.tools import (
     add_demo_movement,
     demo_forecast,
+    demo_reorder_recommendations,
     invoke_named_tool,
     tool_registry,
     write_demo_report,
@@ -29,6 +30,7 @@ from db.database import (
     delete_product,
     get_product,
     initialize_database,
+    list_suppliers,
     list_products,
     low_stock_products,
     out_of_stock_products,
@@ -215,6 +217,16 @@ def demo_availability_out() -> list[dict[str, Any]]:
     return out_of_stock_products()
 
 
+@app.get("/demo/suppliers", summary="List sample demo suppliers")
+def demo_suppliers() -> list[dict[str, Any]]:
+    return list_suppliers()
+
+
+@app.get("/demo/recommendations/reorder", summary="List sample demo reorder recommendations")
+def demo_recommendations_reorder() -> list[dict[str, Any]]:
+    return demo_reorder_recommendations()
+
+
 @app.post("/demo/availability/restock", summary="Record sample demo availability replenishment")
 def demo_availability_restock(payload: DemoAvailabilityPayload) -> dict[str, Any]:
     try:
@@ -354,6 +366,23 @@ def reports_askmamma() -> dict[str, Any]:
 @app.get("/reports/demo-forecast", summary="Generate a sample demo forecast snapshot")
 def reports_demo_forecast() -> dict[str, Any]:
     return demo_forecast(months=6)
+
+
+@app.get("/reports")
+def reports_list() -> list[dict[str, Any]]:
+    config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    reports = []
+    for path in sorted(config.REPORT_DIR.glob("*.md"), key=lambda item: item.stat().st_mtime, reverse=True):
+        stats = path.stat()
+        reports.append(
+            {
+                "file_name": path.name,
+                "path": str(path),
+                "updated_at": datetime.fromtimestamp(stats.st_mtime, timezone.utc).isoformat(),
+                "size_bytes": stats.st_size,
+            }
+        )
+    return reports
 
 
 @app.get("/.well-known/agent-card.json")
