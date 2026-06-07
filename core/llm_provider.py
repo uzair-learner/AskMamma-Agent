@@ -244,7 +244,6 @@ def current_runtime_status() -> dict[str, Any]:
         "provider": current_provider_name(),
         "model": current_model_name(),
         "llm_used": llm_available,
-        "fallback_used": not llm_available,
         "ollama_base_url": config.OLLAMA_BASE_URL,
         "ollama_reachable": ollama_reachable(),
     }

@@ -253,7 +253,6 @@ def admin_diagnostics() -> dict[str, Any]:
         "model": runtime["model"],
         "ollama_base_url": runtime["ollama_base_url"],
         "ollama_reachable": runtime["ollama_reachable"],
-        "fallback_mode_active": runtime["fallback_used"],
         "recent_requests": get_recent_traces(20),
     }
 

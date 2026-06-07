@@ -116,10 +116,9 @@ export default function App() {
       content:
         "Welcome to AskMamma Assistant. Ask about sample inventory, availability, forecasts, reports, or documents and I will route it through the agent system.",
       meta: {
-        provider: "Deterministic fallback",
-        model: "None",
+        provider: "",
+        model: "",
         llm_used: false,
-        fallback_used: true,
         selected_agent: "SupervisorAgent",
         tools_called: [],
         response_time_ms: 0,
@@ -294,7 +293,6 @@ export default function App() {
             provider: result.provider,
             model: result.model,
             llm_used: result.llm_used,
-            fallback_used: result.fallback_used,
             selected_agent: result.selected_agent,
             tools_called: result.tools_called ?? [],
             response_time_ms: result.response_time_ms ?? result.latency_ms ?? 0,
@@ -311,10 +309,9 @@ export default function App() {
           role: "assistant",
           content: `I hit an error while contacting the agent: ${chatError.message}`,
           meta: {
-            provider: "Deterministic fallback",
-            model: "None",
+            provider: "",
+            model: "",
             llm_used: false,
-            fallback_used: true,
             selected_agent: "SupervisorAgent",
             tools_called: [],
             response_time_ms: 0,
@@ -800,7 +797,6 @@ function AskPage({ sessionId, messages, chatInput, setChatInput, submitChatMessa
                     <span>Provider</span><strong>{message.meta.provider}</strong>
                     <span>Model</span><strong>{message.meta.model}</strong>
                     <span>LLM Used</span><strong>{message.meta.llm_used ? "Yes" : "No"}</strong>
-                    <span>Fallback Used</span><strong>{message.meta.fallback_used ? "Yes" : "No"}</strong>
                     <span>Agent</span><strong>{message.meta.selected_agent}</strong>
                     <span>Tools</span><strong>{message.meta.tools_called?.length ? message.meta.tools_called.join(", ") : "None"}</strong>
                     <span>Response Time</span><strong>{formatter.format(message.meta.response_time_ms ?? 0)} ms</strong>
@@ -933,10 +929,6 @@ function AdminPage({ diagnostics }) {
           <article className="supplier-card">
             <strong>Ollama Reachable</strong>
             <p>{diagnostics?.ollama_reachable ? "Yes" : "No"}</p>
-          </article>
-          <article className="supplier-card">
-            <strong>Fallback Mode Active</strong>
-            <p>{diagnostics?.fallback_mode_active ? "Yes" : "No"}</p>
           </article>
         </div>
       </section>

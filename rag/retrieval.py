@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from langchain_core.documents import Document
-from langchain_core.embeddings import Embeddings
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
@@ -23,40 +22,11 @@ DOCUMENTS_DIR = Path(__file__).resolve().parents[1] / "documents"
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".csv", ".docx"}
 
 
-class LocalHashEmbeddings(Embeddings):
-    """Deterministic local embeddings used to keep retrieval offline-friendly."""
-
-    def __init__(self, dimensions: int = 256) -> None:
-        self.dimensions = dimensions
-
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [self._embed(text) for text in texts]
-
-    def embed_query(self, text: str) -> list[float]:
-        return self._embed(text)
-
-    def _embed(self, text: str) -> list[float]:
-        vector = [0.0] * self.dimensions
-        tokens = re.findall(r"[a-z0-9]+", text.lower())
-        if not tokens:
-            return vector
-        for index, token in enumerate(tokens):
-            bucket = hash((token, index % 5)) % self.dimensions
-            vector[bucket] += 1.0
-            if index:
-                bigram_bucket = hash((tokens[index - 1], token)) % self.dimensions
-                vector[bigram_bucket] += 0.5
-        norm = math.sqrt(sum(value * value for value in vector))
-        if not norm:
-            return vector
-        return [value / norm for value in vector]
-
-
-def embeddings_model() -> Embeddings:
+def embeddings_model():
     provider = get_embedding_provider()
-    if provider is not None:
-        return provider.embeddings()
-    return LocalHashEmbeddings()
+    if provider is None:
+        raise RuntimeError("No embedding provider is configured.")
+    return provider.embeddings()
 
 
 def sanitize_filename(file_name: str) -> str:
@@ -231,7 +201,7 @@ def document_search(query: str, limit: int = 5) -> dict[str, Any]:
     if not results:
         return {"found": False, "message": "No relevant document was found.", "results": []}
     provider = get_embedding_provider()
-    retriever_name = f"faiss+{provider.name}-embeddings" if provider is not None else "faiss+local-hash-embeddings"
+    retriever_name = f"faiss+{provider.name}-embeddings"
     return {"found": True, "results": results, "retriever": retriever_name}
 
 

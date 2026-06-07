@@ -15,22 +15,10 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 
 from agents.catalog import build_agent_catalog
-from askmamma.tools import (
-    audit_log,
-    demo_forecast,
-    demo_history,
-    demo_item_lookup,
-    demo_partner_lookup,
-    demo_reorder_recommendations,
-    demo_status,
-    langchain_tools,
-    summarize_tools_for_trace,
-    write_demo_report,
-)
+from askmamma.tools import audit_log, demo_forecast, demo_reorder_recommendations, langchain_tools, summarize_tools_for_trace, write_demo_report
 from core.llm_provider import current_runtime_status, get_chat_model, supports_langchain_agents
 from core.observability import configure_langsmith, redact_payload, safe_error_message, tracing_backend_name
 from db.database import get_connection, initialize_database, list_products, rows_to_dicts, utc_now
-from rag.retrieval import document_search as document_search_tool
 from workflows.routing.classifier import classify_route
 
 
@@ -56,7 +44,6 @@ class GraphState(TypedDict, total=False):
     provider: str
     model: str
     llm_used: bool
-    fallback_used: bool
     response_time_ms: int
 
 
@@ -72,10 +59,9 @@ class AgentResult:
     review_notes: list[str] = field(default_factory=list)
     report_bundle: dict[str, Any] = field(default_factory=dict)
     trace_backend: str = "sqlite"
-    provider: str = "Deterministic fallback"
-    model: str = "None"
+    provider: str = ""
+    model: str = ""
     llm_used: bool = False
-    fallback_used: bool = True
     response_time_ms: int = 0
 
 
@@ -174,10 +160,9 @@ def get_recent_traces(limit: int = 50) -> list[dict[str, Any]]:
             metadata = json.loads(trace.get("token_usage") or "{}")
         except json.JSONDecodeError:
             metadata = {}
-        trace["provider"] = metadata.get("provider", "Deterministic fallback")
-        trace["model"] = metadata.get("model", "None")
+        trace["provider"] = metadata.get("provider", "")
+        trace["model"] = metadata.get("model", "")
         trace["llm_used"] = metadata.get("llm_used", False)
-        trace["fallback_used"] = metadata.get("fallback_used", True)
         trace["response_time_ms"] = metadata.get("response_time_ms", trace.get("latency_ms", 0))
         trace["tools_called"] = metadata.get("tools_called", trace.get("tools_called", []))
         trace["route_path"] = metadata.get("route_path", [])
@@ -228,10 +213,10 @@ def _run_langchain_tool_agent(
     session_id: str,
 ) -> AgentResult | None:
     if not supports_langchain_agents():
-        return None
+        raise RuntimeError("No LangChain chat model is configured.")
     llm = get_chat_model()
     if llm is None:
-        return None
+        raise RuntimeError("No LangChain chat model is available.")
     agent = create_agent(
         model=llm,
         tools=_lc_tools(tool_names),
@@ -274,96 +259,6 @@ def _run_langchain_tool_agent(
         provider=current_runtime_status()["provider"],
         model=current_runtime_status()["model"],
         llm_used=True,
-        fallback_used=False,
-    )
-
-
-def _inventory_fallback(message: str, session_id: str) -> AgentResult:
-    lowered = message.lower()
-    identifier = _extract_identifier(message, session_id)
-    if "low" in lowered and ("stock" in lowered or "availability" in lowered):
-        result = demo_status()
-        low = result["low_stock"]
-        answer = (
-            "In the sample demo inventory, the low-availability items are:\n"
-            + "\n".join(
-                f"- {p['sku']} {p['name']}: {p['stock_quantity']} on hand, reorder level {p['reorder_level']}"
-                for p in low
-            )
-        )
-        return AgentResult(answer=answer, selected_agent="InventoryAgent", tools_called=["DemoAvailabilityTool"], tool_inputs=[{"identifier": None}], tool_outputs=[result])
-    if ("supplier" in lowered or "partner" in lowered) and identifier:
-        result = demo_partner_lookup(identifier)
-        item = demo_status(identifier).get("item")
-        if result.get("found") and item:
-            remember_session_value(session_id, "last_sku", item["sku"])
-            partner = result["partner"]
-            answer = (
-                f"In the sample demo inventory, {result['item']} is supplied by {partner['name']} "
-                f"with a lead time of {partner['lead_time_days']} days."
-            )
-        else:
-            answer = result["message"]
-        return AgentResult(answer=answer, selected_agent="InventoryAgent", tools_called=["DemoPartnerLookupTool"], tool_inputs=[{"identifier": identifier}], tool_outputs=[result])
-    if identifier:
-        result = demo_status(identifier)
-        if result.get("found") and (item := result.get("item")):
-            remember_session_value(session_id, "last_sku", item["sku"])
-            answer = (
-                f"In the sample demo inventory, {item['name']} ({item['sku']}) has {item['stock_quantity']} units on hand "
-                f"and a reorder level of {item['reorder_level']}."
-            )
-            return AgentResult(answer=answer, selected_agent="InventoryAgent", tools_called=["DemoAvailabilityTool"], tool_inputs=[{"identifier": identifier}], tool_outputs=[result])
-    result = demo_item_lookup(message)
-    answer = "Matching sample inventory items:\n" + "\n".join(
-        f"- {item['sku']} {item['name']} ({item['stock_quantity']} on hand)" for item in result[:10]
-    )
-    return AgentResult(answer=answer, selected_agent="InventoryAgent", tools_called=["DemoItemLookupTool"], tool_inputs=[{"query": message}], tool_outputs=[result])
-
-
-def _forecast_fallback(message: str, session_id: str) -> AgentResult:
-    identifier = _extract_identifier(message, session_id)
-    history = demo_history(identifier, months=6)
-    forecast = demo_forecast(identifier, months=6)
-    if history.get("item"):
-        remember_session_value(session_id, "last_sku", history["item"]["sku"])
-    answer = (
-        f"Based on seeded history, expected next-month demand is {forecast['predicted_quantity']} units. "
-        f"{forecast['explanation']}"
-        if forecast.get("found")
-        else forecast["message"]
-    )
-    return AgentResult(
-        answer=answer,
-        selected_agent="ForecastAgent",
-        tools_called=["DemoHistoryTool", "DemoForecastTool"],
-        tool_inputs=[{"identifier": identifier, "months": 6}, {"identifier": identifier, "months": 6}],
-        tool_outputs=[history, forecast],
-    )
-
-
-def _document_fallback(message: str) -> AgentResult:
-    result = document_search_tool(message)
-    if not result.get("found"):
-        answer = result["message"]
-    else:
-        answer = "I found these document references:\n" + "\n".join(
-            f"- {item['file_name']}: {item['text'][:180].strip()}..." for item in result["results"][:3]
-        )
-    return AgentResult(answer=answer, selected_agent="DocumentAgent", tools_called=["DocumentSearchTool"], tool_inputs=[{"query": message, "limit": 5}], tool_outputs=[result])
-
-
-def _research_fallback(message: str) -> AgentResult:
-    topic = classify_route(message)
-    answer = (
-        "This project uses a supervisor-led multi-agent design. LangGraph manages routing, LangChain provides "
-        "tool calling and prompt abstractions, RAG grounds answers in documents, MCP exposes tools/resources/prompts, "
-        "and A2A-style endpoints show how agents can publish capabilities and accept tasks."
-    )
-    return AgentResult(
-        answer=answer,
-        selected_agent="ResearchAgent",
-        intermediate_steps=[{"agent": "ResearchAgent", "topic": topic or "architecture"}],
     )
 
 
@@ -426,7 +321,7 @@ def inventory_node(state: GraphState) -> GraphState:
         {"DemoItemLookupTool", "DemoAvailabilityTool", "DemoPartnerLookupTool", "DemoRecommendationTool"},
         state["user_input"],
         state["session_id"],
-    ) or _inventory_fallback(state["user_input"], state["session_id"])
+    )
     return _result_to_state(state, result, "InventoryAgent")
 
 
@@ -438,7 +333,7 @@ def forecast_node(state: GraphState) -> GraphState:
         {"DemoHistoryTool", "DemoForecastTool", "DemoRecommendationTool"},
         state["user_input"],
         state["session_id"],
-    ) or _forecast_fallback(state["user_input"], state["session_id"])
+    )
     return _result_to_state(state, result, "ForecastAgent")
 
 
@@ -450,13 +345,12 @@ def document_node(state: GraphState) -> GraphState:
         {"DocumentSearchTool"},
         state["user_input"],
         state["session_id"],
-    ) or _document_fallback(state["user_input"])
+    )
     return _result_to_state(state, result, "DocumentAgent")
 
 
 def research_node(state: GraphState) -> GraphState:
-    result = _research_fallback(state["user_input"])
-    return _result_to_state(state, result, "ResearchAgent")
+    raise RuntimeError("ResearchAgent requires an explicit implementation without fallback logic.")
 
 
 def report_node(state: GraphState) -> GraphState:
@@ -513,7 +407,7 @@ def quality_node(state: GraphState) -> GraphState:
 def _result_to_state(state: GraphState, result: AgentResult, node_name: str) -> GraphState:
     route_path = _append_route(state, node_name)
     steps = state.get("intermediate_steps", [])
-    for step in result.intermediate_steps or [{"agent": result.selected_agent, "mode": "deterministic_fallback"}]:
+    for step in result.intermediate_steps:
         steps = [*steps, redact_payload(step)]
     return {
         "selected_agent": result.selected_agent,
@@ -532,7 +426,6 @@ def _result_to_state(state: GraphState, result: AgentResult, node_name: str) -> 
         "provider": result.provider,
         "model": result.model,
         "llm_used": result.llm_used,
-        "fallback_used": result.fallback_used,
     }
 
 
@@ -598,7 +491,6 @@ def trace_run(session_id: str, user_input: str, result: AgentResult, latency_ms:
                             "provider": result.provider,
                             "model": result.model,
                             "llm_used": result.llm_used,
-                            "fallback_used": result.fallback_used,
                             "response_time_ms": latency_ms,
                             "report_bundle": result.report_bundle,
                         },
@@ -613,7 +505,6 @@ def trace_run(session_id: str, user_input: str, result: AgentResult, latency_ms:
                         "provider": result.provider,
                         "model": result.model,
                         "llm_used": result.llm_used,
-                        "fallback_used": result.fallback_used,
                         "response_time_ms": latency_ms,
                         "route_path": result.route_path,
                         "tools_called": result.tools_called,
@@ -642,10 +533,9 @@ def _state_to_result(state: GraphState) -> AgentResult:
         review_notes=state.get("review_notes", []),
         report_bundle=state.get("report_bundle", {}),
         trace_backend=state.get("trace_backend", tracing_backend_name()),
-        provider=state.get("provider", "Deterministic fallback"),
-        model=state.get("model", "None"),
+        provider=state.get("provider", ""),
+        model=state.get("model", ""),
         llm_used=state.get("llm_used", False),
-        fallback_used=state.get("fallback_used", True),
         response_time_ms=state.get("response_time_ms", 0),
     )
 
@@ -669,10 +559,9 @@ def invoke_agent(user_input: str, session_id: str | None = None) -> dict[str, An
                 "route_path": [],
                 "review_notes": [],
                 "trace_backend": tracing_backend_name(),
-                "provider": runtime["provider"] if runtime["llm_used"] else "Deterministic fallback",
-                "model": runtime["model"] if runtime["llm_used"] else "None",
+                "provider": runtime["provider"],
+                "model": runtime["model"],
                 "llm_used": runtime["llm_used"],
-                "fallback_used": runtime["fallback_used"],
             }
         )
         result = _state_to_result(final_state)
@@ -694,7 +583,6 @@ def invoke_agent(user_input: str, session_id: str | None = None) -> dict[str, An
         "provider": result.provider,
         "model": result.model,
         "llm_used": result.llm_used,
-        "fallback_used": result.fallback_used,
         "selected_agent": result.selected_agent,
         "tools_called": result.tools_called,
         "tool_inputs": result.tool_inputs,
