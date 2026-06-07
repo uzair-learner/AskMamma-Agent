@@ -20,7 +20,6 @@ from askmamma.tools import (
     demo_reorder_recommendations,
     demo_history,
     tool_registry,
-    write_demo_report,
 )
 from core import config
 from core.llm_provider import LLM_UNAVAILABLE_MESSAGE, current_runtime_status, get_llm_provider
@@ -32,8 +31,10 @@ from db.database import (
     find_product,
     get_product,
     initialize_database,
+    list_ai_generation_events,
     list_suppliers,
     list_products,
+    log_ai_generation_event,
     low_stock_products,
     out_of_stock_products,
     update_product,
@@ -44,7 +45,7 @@ from protocols.agent_cards.builder import build_agent_card
 from protocols.mcp.server import handle_rpc, list_prompts, list_resources, list_tools
 
 app = FastAPI(
-    title="AskMamma Agent API",
+    title="Inventory Pilot AI API",
     description=(
         "Local AI agent demo with FastAPI, Streamlit, LangGraph routing, LangChain tool calling, "
         "embedding-backed RAG, memory, tracing, tests, SQLite runtime state, and clearly labeled sample demo data."
@@ -62,6 +63,8 @@ app.add_middleware(
 RATE_LIMIT_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
 FRONTEND_DIST_DIR = config.ROOT_DIR / "frontend" / "dist"
 TASK_STORE: dict[str, dict[str, Any]] = {}
+AI_UNAVAILABLE_MESSAGE = "Ollama is unavailable. AI content was not generated."
+REPORT_UNAVAILABLE_MESSAGE = "Ollama is unavailable. Report was not generated."
 
 
 class DemoItemPayload(BaseModel):
@@ -150,88 +153,152 @@ def _rag():
     return retrieval
 
 
-def _reports_snapshot() -> list[dict[str, Any]]:
-    config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    reports = []
-    for path in sorted(config.REPORT_DIR.glob("*.*"), key=lambda item: item.stat().st_mtime, reverse=True):
-        stats = path.stat()
-        reports.append(
-            {
-                "file_name": path.name,
-                "path": str(path),
-                "updated_at": datetime.fromtimestamp(stats.st_mtime, timezone.utc).isoformat(),
-                "size_bytes": stats.st_size,
-                "download_url": f"/reports/download/{path.name}",
-            }
-        )
-    return reports
+def _online_reports_snapshot(limit: int = 20) -> list[dict[str, Any]]:
+    return list_ai_generation_events(limit=limit, feature_name="online_report")
+
+
+def _ai_payload(
+    *,
+    provider: str,
+    model: str,
+    llm_used: bool,
+    generated_at: str,
+    status: str,
+    error_message: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "ai_source": "Ollama",
+        "provider": provider,
+        "model": model,
+        "llm_used": llm_used,
+        "generated_at": generated_at,
+        "status": status,
+        "error_message": error_message,
+    }
+
+
+def _generate_ai_content(
+    *,
+    feature_name: str,
+    prompt: str,
+    content_key: str,
+    unavailable_message: str,
+    track_event: bool = True,
+) -> dict[str, Any]:
+    generated_at = utcnow()
+    provider = "Ollama"
+    model = config.OLLAMA_MODEL
+    try:
+        runtime = current_runtime_status()
+        provider = runtime.get("provider") or provider
+        model = runtime.get("model") or model
+    except Exception as exc:
+        runtime = {
+            "provider": provider,
+            "model": model,
+            "llm_used": False,
+            "runtime_error": safe_error_message(exc),
+        }
+
+    if not runtime.get("llm_used"):
+        error_message = runtime.get("runtime_error") or unavailable_message
+        if track_event:
+            log_ai_generation_event(
+                feature_name=feature_name,
+                provider=provider,
+                model=model,
+                llm_used=False,
+                prompt=prompt,
+                response=None,
+                created_at=generated_at,
+                status="failed",
+                error_message=error_message,
+            )
+        return {
+            content_key: unavailable_message,
+            **_ai_payload(
+                provider=provider,
+                model=model,
+                llm_used=False,
+                generated_at=generated_at,
+                status="failed",
+                error_message=error_message,
+            ),
+        }
+
+    try:
+        response = get_llm_provider().generate(prompt)
+        if track_event:
+            log_ai_generation_event(
+                feature_name=feature_name,
+                provider=provider,
+                model=model,
+                llm_used=True,
+                prompt=prompt,
+                response=response,
+                created_at=generated_at,
+                status="success",
+            )
+        return {
+            content_key: response,
+            **_ai_payload(
+                provider=provider,
+                model=model,
+                llm_used=True,
+                generated_at=generated_at,
+                status="success",
+            ),
+        }
+    except Exception as exc:
+        error_message = safe_error_message(exc)
+        if track_event:
+            log_ai_generation_event(
+                feature_name=feature_name,
+                provider=provider,
+                model=model,
+                llm_used=False,
+                prompt=prompt,
+                response=None,
+                created_at=generated_at,
+                status="failed",
+                error_message=error_message,
+            )
+        return {
+            content_key: unavailable_message,
+            **_ai_payload(
+                provider=provider,
+                model=model,
+                llm_used=False,
+                generated_at=generated_at,
+                status="failed",
+                error_message=error_message,
+            ),
+        }
 
 
 def _ai_message(prompt: str) -> dict[str, Any]:
-    try:
-        runtime = current_runtime_status()
-    except Exception:
-        runtime = {
-            "provider": "Unavailable",
-            "model": "Unavailable",
-            "llm_used": False,
-            "ollama_base_url": config.OLLAMA_BASE_URL,
-            "ollama_reachable": False,
-            "runtime_error": None,
-        }
-    payload = {
-        "provider": runtime["provider"],
-        "model": runtime["model"],
-        "llm_used": False,
-        "message": runtime.get("runtime_error") or LLM_UNAVAILABLE_MESSAGE,
-    }
-    if not runtime["llm_used"]:
-        return payload
-    try:
-        response = get_llm_provider().generate(prompt)
-        return {
-            **payload,
-            "llm_used": True,
-            "message": response,
-        }
-    except Exception as exc:
-        return {**payload, "message": safe_error_message(exc)}
+    return _generate_ai_content(
+        feature_name="insight",
+        prompt=prompt,
+        content_key="message",
+        unavailable_message=AI_UNAVAILABLE_MESSAGE,
+        track_event=False,
+    )
 
 
 def _ai_explanation_message(
     prompt: str,
     *,
-    unavailable_message: str = "AI explanation is unavailable because LLM is not configured or available.",
+    feature_name: str,
+    unavailable_message: str = AI_UNAVAILABLE_MESSAGE,
 ) -> dict[str, Any]:
-    try:
-        runtime = current_runtime_status()
-    except Exception:
-        runtime = {
-            "provider": "Unavailable",
-            "model": "Unavailable",
-            "llm_used": False,
-            "ollama_base_url": config.OLLAMA_BASE_URL,
-            "ollama_reachable": False,
-            "runtime_error": None,
-        }
-
-    payload = {
-        "provider": runtime["provider"],
-        "model": runtime["model"],
-        "llm_used": False,
-        "ai_explanation": unavailable_message,
-    }
-    if not runtime["llm_used"]:
-        return payload
-    try:
-        response = get_llm_provider().generate(prompt)
-        return {
-            **payload,
-            "llm_used": True,
-            "ai_explanation": response,
-        }
-    except Exception:
-        return payload
+    return _generate_ai_content(
+        feature_name=feature_name,
+        prompt=prompt,
+        content_key="ai_explanation",
+        unavailable_message=unavailable_message,
+        track_event=True,
+    )
 
 
 @app.get("/health")
@@ -370,7 +437,7 @@ def forecast_ai_explanation() -> dict[str, Any]:
         "which items may need attention soon, and give a concise forecast summary.\n\n"
         f"{json.dumps(payload, default=str)}"
     )
-    return _ai_explanation_message(prompt)
+    return _ai_explanation_message(prompt, feature_name="forecast_explanation")
 
 
 @app.get("/ai/insights/reorder")
@@ -394,7 +461,7 @@ def reorder_ai_explanation() -> dict[str, Any]:
         "describe the risk if reorder is delayed, and give a concise purchase recommendation.\n\n"
         f"{json.dumps(recommendations, default=str)}"
     )
-    return _ai_explanation_message(prompt)
+    return _ai_explanation_message(prompt, feature_name="reorder_explanation")
 
 
 @app.get("/ai/insights/suppliers")
@@ -425,7 +492,54 @@ def demo_forecast_run(payload: DemoForecastPayload) -> dict[str, Any]:
 @app.post("/agent/chat")
 def agent_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
     _enforce_rate_limit(_request_key(request, "agent-chat"))
-    return _orchestrator().invoke_agent(payload.message, payload.session_id)
+    result = _orchestrator().invoke_agent(payload.message, payload.session_id)
+    generated_at = utcnow()
+    if result.get("llm_used"):
+        log_ai_generation_event(
+            feature_name="chat",
+            provider=result.get("provider") or "Ollama",
+            model=result.get("model") or config.OLLAMA_MODEL,
+            llm_used=True,
+            prompt=payload.message,
+            response=result.get("answer"),
+            created_at=generated_at,
+            status="success",
+        )
+        return {
+            **result,
+            **_ai_payload(
+                provider=result.get("provider") or "Ollama",
+                model=result.get("model") or config.OLLAMA_MODEL,
+                llm_used=True,
+                generated_at=generated_at,
+                status="success",
+            ),
+        }
+
+    error_message = result.get("answer") or AI_UNAVAILABLE_MESSAGE
+    log_ai_generation_event(
+        feature_name="chat",
+        provider=result.get("provider") or "Ollama",
+        model=result.get("model") or config.OLLAMA_MODEL,
+        llm_used=False,
+        prompt=payload.message,
+        response=None,
+        created_at=generated_at,
+        status="failed",
+        error_message=error_message,
+    )
+    return {
+        **result,
+        "answer": AI_UNAVAILABLE_MESSAGE,
+        **_ai_payload(
+            provider=result.get("provider") or "Ollama",
+            model=result.get("model") or config.OLLAMA_MODEL,
+            llm_used=False,
+            generated_at=generated_at,
+            status="failed",
+            error_message=error_message,
+        ),
+    }
 
 
 @app.post("/agent/run-task")
@@ -465,6 +579,7 @@ def admin_diagnostics() -> dict[str, Any]:
         recent_requests = _orchestrator().get_recent_traces(20)
     except Exception:
         recent_requests = []
+    ai_events = list_ai_generation_events(20)
     return {
         "provider": runtime["provider"],
         "model": runtime["model"],
@@ -472,6 +587,7 @@ def admin_diagnostics() -> dict[str, Any]:
         "ollama_reachable": runtime["ollama_reachable"],
         "runtime_error": runtime.get("runtime_error"),
         "recent_requests": recent_requests,
+        "ai_events": ai_events,
     }
 
 
@@ -498,7 +614,7 @@ def mcp_prompts() -> list[dict[str, Any]]:
 @app.get("/mcp/metadata")
 def mcp_metadata() -> dict[str, Any]:
     return {
-        "server_name": "AskMamma MCP Server",
+        "server_name": "Inventory Pilot AI MCP Server",
         "transport": "http+jsonrpc",
         "methods": ["tools/list", "tools/call", "resources/list", "prompts/list", "agents/list"],
         "tool_count": len(tool_registry()),
@@ -574,15 +690,44 @@ def documents_search(payload: DocumentSearchPayload) -> dict[str, Any]:
 
 
 @app.get("/reports/demo", summary="Generate a sample demo report")
-def reports_demo(output_format: str = "md") -> dict[str, Any]:
-    report = write_demo_report(output_format=output_format)
-    return {**report, "download_url": f"/reports/download/{report['file_name']}"}
+def reports_demo() -> dict[str, Any]:
+    return reports_askmamma()
 
 
 @app.get("/reports/askmamma")
-def reports_askmamma(output_format: str = "md") -> dict[str, Any]:
-    report = write_demo_report("AskMamma Operations Report", output_format=output_format)
-    return {**report, "download_url": f"/reports/download/{report['file_name']}"}
+def reports_askmamma() -> dict[str, Any]:
+    dashboard = dashboard_stats()
+    recommendations = demo_reorder_recommendations()
+    forecast = demo_forecast(months=6)
+    suppliers = list_suppliers()
+    products = list_products(limit=200)
+    payload = {
+        "dashboard": dashboard,
+        "forecast": forecast,
+        "reorder_recommendations": recommendations,
+        "high_demand_products": dashboard.get("predicted_high_demand_products", []),
+        "low_stock_products": [item for item in products if item["stock_quantity"] > 0 and item["stock_quantity"] <= item["reorder_level"]],
+        "out_of_stock_products": [item for item in products if item["stock_quantity"] <= 0],
+        "suppliers": suppliers,
+    }
+    prompt = (
+        "You are writing an online inventory operations report. Use only the provided JSON. "
+        "Write a concise report with sections for dashboard summary, forecast risks, reorder priorities, "
+        "high-demand products, stock risks, supplier risks, and recommended next actions. "
+        "Do not invent any data.\n\n"
+        f"{json.dumps(payload, default=str)}"
+    )
+    report = _generate_ai_content(
+        feature_name="online_report",
+        prompt=prompt,
+        content_key="report_content",
+        unavailable_message=REPORT_UNAVAILABLE_MESSAGE,
+        track_event=True,
+    )
+    return {
+        **report,
+        "title": "Inventory Pilot AI Online Report",
+    }
 
 
 @app.get("/ai/insights/reports")
@@ -591,7 +736,7 @@ def ai_reports_insight() -> dict[str, Any]:
         "dashboard": dashboard_stats(),
         "recommendations": demo_reorder_recommendations()[:8],
         "suppliers": list_suppliers()[:8],
-        "reports": _reports_snapshot()[:5],
+        "reports": _online_reports_snapshot(5),
     }
     prompt = (
         "You are writing a concise executive-style report summary. Use only the provided JSON. "
@@ -608,16 +753,7 @@ def reports_demo_forecast() -> dict[str, Any]:
 
 @app.get("/reports")
 def reports_list() -> list[dict[str, Any]]:
-    return _reports_snapshot()
-
-
-@app.get("/reports/download/{file_name}")
-def reports_download(file_name: str) -> FileResponse:
-    safe_name = Path(file_name).name
-    path = config.REPORT_DIR / safe_name
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404, detail="Report not found")
-    return FileResponse(path, filename=safe_name)
+    return _online_reports_snapshot()
 
 
 @app.get("/.well-known/agent-card.json")
@@ -650,7 +786,7 @@ def frontend_index() -> Response:
     if index_path.exists():
         return FileResponse(index_path)
     return HTMLResponse(
-        "<h1>AskMamma frontend not built yet.</h1><p>Run the launcher so the React app is built before startup.</p>",
+        "<h1>Inventory Pilot AI frontend not built yet.</h1><p>Run the launcher so the React app is built before startup.</p>",
         status_code=503,
     )
 
@@ -666,6 +802,6 @@ def frontend_assets(full_path: str) -> Response:
         return FileResponse(index_path)
 
     return HTMLResponse(
-        "<h1>AskMamma frontend not built yet.</h1><p>Run the launcher so the React app is built before startup.</p>",
+        "<h1>Inventory Pilot AI frontend not built yet.</h1><p>Run the launcher so the React app is built before startup.</p>",
         status_code=503,
     )

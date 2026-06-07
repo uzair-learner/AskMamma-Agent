@@ -66,7 +66,7 @@ def test_returns_clear_message_when_llm_unavailable(monkeypatch):
         "current_runtime_status",
         lambda: {
             "provider": "Ollama",
-            "model": "llama3.1",
+            "model": "llama3.2:latest",
             "llm_used": False,
             "ollama_base_url": "http://localhost:11434",
             "ollama_reachable": False,

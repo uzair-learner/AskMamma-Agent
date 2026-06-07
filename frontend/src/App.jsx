@@ -12,7 +12,7 @@ const currencyFormatter = new Intl.NumberFormat("en-US", {
 
 const cannedPrompts = [
   "Which sample demo items are low in availability right now?",
-  "Generate a short AskMamma operations report.",
+  "Generate a short Inventory Pilot AI operations report.",
   "What does the return policy say about unopened items?",
 ];
 
@@ -24,7 +24,7 @@ const navigationItems = [
   { label: "Reorder", route: "reorder" },
   { label: "Suppliers", route: "suppliers" },
   { label: "Reports", route: "reports" },
-  { label: "Ask AskMamma", route: "ask" },
+  { label: "Inventory Pilot AI Assistant", route: "ask" },
   { label: "AI Architecture", route: "architecture" },
   { label: "Admin", route: "admin" },
 ];
@@ -37,8 +37,8 @@ const dashboardCardConfig = [
   ["Forecast Alerts", "forecasts", {}, "violet", "Products where historical usage suggests near-term demand pressure.", "View forecast alerts"],
   ["Reorder Recommendations", "reorder", {}, "sunset", "Suggested purchasing actions based on current stock and deterministic forecasts.", "View reorder plan"],
   ["Suppliers", "suppliers", {}, "teal", "See supplier coverage, low-stock exposure, and demo partner details.", "View suppliers"],
-  ["Reports", "reports", {}, "slate", "Generate and download AskMamma operations reports.", "View reports"],
-  ["Ask AskMamma", "ask", {}, "indigo", "Open the AI operations assistant for inventory, forecast, or document questions.", "Open AI chat"],
+  ["Reports", "reports", {}, "slate", "Generate and download Inventory Pilot AI operations reports.", "View reports"],
+  ["Inventory Pilot AI Assistant", "ask", {}, "indigo", "Open the AI operations assistant for inventory, forecast, or document questions.", "Open AI chat"],
   ["AI Architecture", "architecture", {}, "rose", "Understand how the supervisor and specialist agents handle business requests.", "Explore agent flow"],
   ["Admin / Traces", "admin", {}, "graphite", "Review diagnostics, request metadata, and internal operational detail.", "Open admin traces"],
 ].map(([title, route, params, accent, description, action]) => ({ title, route, params, accent, description, action }));
@@ -65,6 +65,13 @@ function parseHash() {
 function navigateTo(route, params = {}) {
   const query = new URLSearchParams(params).toString();
   window.location.hash = query ? `${route}?${query}` : route;
+}
+
+function formatGeneratedAt(value) {
+  if (!value) {
+    return "Unavailable";
+  }
+  return new Date(value).toLocaleString();
 }
 
 async function request(path, options = {}) {
@@ -115,7 +122,7 @@ export default function App() {
       id: "welcome",
       role: "assistant",
       content:
-        "Welcome to AskMamma Assistant. Ask about sample inventory, availability, forecasts, reports, or documents and I will route it through the agent system.",
+        "Welcome to Inventory Pilot AI. Ask about inventory, forecasting, reorder recommendations, suppliers, reports, or documents.",
       meta: {
         provider: "",
         model: "",
@@ -184,10 +191,12 @@ export default function App() {
         if (!cancelled) {
           startTransition(() =>
             setPageInsight({
-              message: loadError.message,
-              provider: "",
-              model: "",
+              ai_explanation: "Ollama is unavailable. AI content was not generated.",
+              ai_source: "Ollama",
+              provider: "Ollama",
+              model: "llama3.2:latest",
               llm_used: false,
+              generated_at: new Date().toISOString(),
             }),
           );
         }
@@ -285,11 +294,9 @@ export default function App() {
     setError("");
     try {
       const report = await request("/reports/askmamma");
-      setReportSummary(report.summary);
+      setReportSummary("");
+      startTransition(() => setReports((current) => [report, ...current.filter((item) => item.created_at !== report.created_at)]));
       await loadAllData();
-      if (report.download_url) {
-        window.open(`${API_BASE}${report.download_url}`, "_blank", "noopener,noreferrer");
-      }
       navigateTo("reports");
     } catch (reportError) {
       setError(reportError.message);
@@ -334,9 +341,11 @@ export default function App() {
           role: "assistant",
           content: result.answer,
           meta: {
+            ai_source: result.ai_source,
             provider: result.provider,
             model: result.model,
             llm_used: result.llm_used,
+            generated_at: result.generated_at,
             selected_agent: result.selected_agent,
             tools_called: result.tools_called ?? [],
             response_time_ms: result.response_time_ms ?? result.latency_ms ?? 0,
@@ -353,9 +362,11 @@ export default function App() {
           role: "assistant",
           content: `I hit an error while contacting the agent: ${chatError.message}`,
           meta: {
+            ai_source: "Ollama",
             provider: "",
             model: "",
             llm_used: false,
+            generated_at: new Date().toISOString(),
             selected_agent: "SupervisorAgent",
             tools_called: [],
             response_time_ms: 0,
@@ -379,7 +390,7 @@ export default function App() {
         "Reorder Recommendations": productCounts.reorder,
         Suppliers: productCounts.suppliers,
         Reports: productCounts.reports,
-        "Ask AskMamma": productCounts.ask,
+        "Inventory Pilot AI Assistant": productCounts.ask,
         "AI Architecture": productCounts.architecture,
         "Admin / Traces": productCounts.admin,
       }[card.title] ?? "--",
@@ -392,8 +403,8 @@ export default function App() {
 
       <aside className="sidebar">
         <div className="brand-block">
-          <span className="eyebrow">AskMamma</span>
-          <h1>Operations Studio</h1>
+          <span className="eyebrow">Inventory Pilot AI</span>
+          <h1>Inventory Pilot AI</h1>
           <p>Move by business category instead of hunting through a big table first.</p>
         </div>
         <nav className="sidebar-nav">
@@ -423,7 +434,7 @@ export default function App() {
       <main className="main-shell">
         <header className="topbar">
           <div>
-            <p className="section-label">AskMamma Operations Studio</p>
+            <p className="section-label">Inventory Pilot AI</p>
             <h2>{pageTitle(routeState)}</h2>
           </div>
           <div className="topbar-actions">
@@ -434,7 +445,7 @@ export default function App() {
               {isGeneratingReport ? "Generating..." : "Generate report"}
             </button>
             <button className="primary-button" onClick={() => navigateTo("ask")}>
-              Ask AskMamma
+              Inventory Pilot AI Assistant
             </button>
           </div>
         </header>
@@ -483,6 +494,17 @@ function DataSourceBadge({ text, tone = "local" }) {
   return <div className={`data-source-badge data-source-${tone}`}>{text}</div>;
 }
 
+function AIProofPanel({ meta }) {
+  return (
+    <div className="meta-row">
+      <span>AI Source: {meta.ai_source || meta.provider || "Ollama"}</span>
+      <span>Model: {meta.model || "Unavailable"}</span>
+      <span>LLM Used: {meta.llm_used ? "Yes" : "No"}</span>
+      <span>Generated At: {formatGeneratedAt(meta.generated_at)}</span>
+    </div>
+  );
+}
+
 function AIInsightPanel({ insight }) {
   const text = insight?.ai_explanation ?? insight?.message;
   if (!text) {
@@ -495,11 +517,7 @@ function AIInsightPanel({ insight }) {
     <div className="watch-card architecture-note">
       <DataSourceBadge text={badgeText} tone={insight.llm_used ? "ai" : "local"} />
       <p>{text}</p>
-      <div className="meta-row">
-        <span>Provider: {insight.provider || "Unavailable"}</span>
-        <span>Model: {insight.model || "Unavailable"}</span>
-        <span>LLM Used: {insight.llm_used ? "Yes" : "No"}</span>
-      </div>
+      <AIProofPanel meta={insight} />
     </div>
   );
 }
@@ -512,7 +530,7 @@ function DashboardPage({ cards, dashboard, forecastAlerts, highDemandProducts, i
           <span className="eyebrow">Business dashboard</span>
           <h3>Click a business category and jump straight to the right data.</h3>
           <p>
-            AskMamma is organized around operational decisions, not raw tables. Choose inventory, forecasts, suppliers,
+            Inventory Pilot AI is organized around operational decisions, not raw tables. Choose inventory, forecasts, suppliers,
             reports, AI chat, or architecture and go directly to the filtered view you need.
           </p>
           <DataSourceBadge text="Calculated from local inventory/demo data" />
@@ -559,11 +577,11 @@ function DashboardPage({ cards, dashboard, forecastAlerts, highDemandProducts, i
 
       <section className="panel split-panel">
         <div>
-          <p className="section-label">How AskMamma Works</p>
+          <p className="section-label">How Inventory Pilot AI Works</p>
           <h3>Three steps</h3>
           <ol className="step-list">
             <li>Ask a business question.</li>
-            <li>AskMamma routes it to the correct agent.</li>
+            <li>Inventory Pilot AI routes it to the correct agent.</li>
             <li>The agent uses tools, data, and reports to return the answer.</li>
           </ol>
         </div>
@@ -806,34 +824,30 @@ function ReportsPage({ reports, onGenerateReport, isGeneratingReport, insight })
         <div className="panel-header">
           <div>
             <p className="section-label">Reports</p>
-            <h3>Generated reports</h3>
+            <h3>Online reports</h3>
           </div>
           <button className="primary-button" onClick={onGenerateReport} disabled={isGeneratingReport}>
             {isGeneratingReport ? "Generating..." : "Generate new report"}
           </button>
         </div>
-        <DataSourceBadge text="Calculated from local inventory/demo data" />
+        <DataSourceBadge text="Generated online with Ollama" tone="ai" />
         <AIInsightPanel insight={insight} />
         <div className="list-stack">
-          {reports.map((report) => (
-            <article key={report.path} className="list-card">
+          {reports.map((report, index) => (
+            <article key={`${report.created_at || report.generated_at}-${index}`} className="list-card">
               <div className="list-card-top">
                 <div>
-                  <strong>{report.file_name}</strong>
-                  <span>{new Date(report.updated_at).toLocaleString()}</span>
+                  <strong>{report.title || "Online report"}</strong>
+                  <span>{formatGeneratedAt(report.created_at || report.generated_at)}</span>
                 </div>
-                <strong>{formatter.format(report.size_bytes)} bytes</strong>
+                <strong>{report.status || (report.llm_used ? "success" : "failed")}</strong>
               </div>
-              <p>{report.path}</p>
-              <div className="meta-row">
-                <span>Excel report saved in the project folder</span>
-                <a className="inline-link" href={`${API_BASE}${report.download_url}`} download>
-                  Download report
-                </a>
-              </div>
+              <p>{report.report_content || report.response || "Ollama is unavailable. Report was not generated."}</p>
+              <AIProofPanel meta={{ ...report, generated_at: report.created_at || report.generated_at }} />
+              {report.error_message ? <p>{report.error_message}</p> : null}
             </article>
           ))}
-          {!reports.length ? <div className="empty-state">No reports have been generated yet.</div> : null}
+          {!reports.length ? <div className="empty-state">No online reports have been generated yet.</div> : null}
         </div>
       </section>
     </div>
@@ -846,8 +860,8 @@ function AskPage({ sessionId, messages, chatInput, setChatInput, submitChatMessa
       <section className="panel chat-panel">
         <div className="panel-header">
           <div>
-            <p className="section-label">Ask AskMamma</p>
-            <h3>AI operations chat</h3>
+            <p className="section-label">Inventory Pilot AI Assistant</p>
+            <h3>Inventory Pilot AI Assistant</h3>
           </div>
           <span className="session-pill">Session {sessionId.slice(0, 8)}</span>
         </div>
@@ -862,15 +876,17 @@ function AskPage({ sessionId, messages, chatInput, setChatInput, submitChatMessa
         <div className="chat-stream">
           {messages.map((message) => (
             <article key={message.id} className={`message-bubble message-${message.role}`}>
-              <div className="message-role">{message.role === "assistant" ? "AskMamma AI" : "You"}</div>
+              <div className="message-role">{message.role === "assistant" ? "Inventory Pilot AI Assistant" : "You"}</div>
               <p>{message.content}</p>
+              {message.role === "assistant" && message.meta ? <AIProofPanel meta={message.meta} /> : null}
               {message.meta ? (
                 <details className="technical-details">
                   <summary>Technical Details</summary>
                   <div className="technical-grid">
-                    <span>Provider</span><strong>{message.meta.provider}</strong>
+                    <span>AI Source</span><strong>{message.meta.ai_source || message.meta.provider || "Ollama"}</strong>
                     <span>Model</span><strong>{message.meta.model}</strong>
                     <span>LLM Used</span><strong>{message.meta.llm_used ? "Yes" : "No"}</strong>
+                    <span>Generated At</span><strong>{formatGeneratedAt(message.meta.generated_at)}</strong>
                     <span>Agent</span><strong>{message.meta.selected_agent}</strong>
                     <span>Tools</span><strong>{message.meta.tools_called?.length ? message.meta.tools_called.join(", ") : "None"}</strong>
                     <span>Response Time</span><strong>{formatter.format(message.meta.response_time_ms ?? 0)} ms</strong>
@@ -894,7 +910,7 @@ function AskPage({ sessionId, messages, chatInput, setChatInput, submitChatMessa
             rows={4}
           />
           <button className="primary-button" type="submit" disabled={isSending || !chatInput.trim()}>
-            {isSending ? "Sending..." : "Ask AskMamma"}
+            {isSending ? "Sending..." : "Ask Inventory Pilot AI Assistant"}
           </button>
         </form>
       </section>
@@ -918,10 +934,10 @@ function ArchitecturePage({ onAsk }) {
         <div className="panel-header">
           <div>
             <p className="section-label">AI Architecture</p>
-            <h3>How the AskMamma agents work</h3>
+            <h3>How the Inventory Pilot AI agents work</h3>
           </div>
           <button className="secondary-button" onClick={onAsk}>
-            Ask AskMamma now
+            Open Inventory Pilot AI Assistant
           </button>
         </div>
         <div className="architecture-diagram">
@@ -978,6 +994,7 @@ function ArchitecturePage({ onAsk }) {
 
 function AdminPage({ diagnostics }) {
   const recentRequests = diagnostics?.recent_requests ?? [];
+  const aiEvents = diagnostics?.ai_events ?? [];
   return (
     <div className="page-grid">
       <section className="panel">
@@ -1034,6 +1051,39 @@ function AdminPage({ diagnostics }) {
           {!recentRequests.length ? <div className="empty-state">No requests recorded yet.</div> : null}
         </div>
       </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <p className="section-label">AI Events</p>
+            <h3>Recent Ollama generations</h3>
+          </div>
+        </div>
+        <div className="list-stack">
+          {aiEvents.map((event) => (
+            <article key={event.id} className="list-card">
+              <div className="list-card-top">
+                <div>
+                  <strong>{event.feature_name}</strong>
+                  <span>{formatGeneratedAt(event.created_at)}</span>
+                </div>
+                <strong>{event.status}</strong>
+              </div>
+              <div className="meta-row">
+                <span>Feature: {event.feature_name}</span>
+                <span>Provider: {event.provider}</span>
+                <span>Model: {event.model}</span>
+              </div>
+              <div className="meta-row">
+                <span>LLM Used: {event.llm_used ? "Yes" : "No"}</span>
+                <span>Status: {event.status}</span>
+                <span>Error: {event.error_message || "None"}</span>
+              </div>
+            </article>
+          ))}
+          {!aiEvents.length ? <div className="empty-state">No AI events recorded yet.</div> : null}
+        </div>
+      </section>
     </div>
   );
 }
@@ -1055,10 +1105,10 @@ function pageTitle(routeState) {
     reorder: "Reorder Recommendations",
     suppliers: "Suppliers",
     reports: "Reports",
-    ask: "Ask AskMamma",
+    ask: "Inventory Pilot AI Assistant",
     architecture: "AI Architecture",
     admin: "Admin / Diagnostics",
-  }[routeState.route] ?? "AskMamma";
+  }[routeState.route] ?? "Inventory Pilot AI";
 }
 
 function insightPath(routeState, selectedProductId) {

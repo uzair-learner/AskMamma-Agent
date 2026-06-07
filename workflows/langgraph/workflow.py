@@ -15,7 +15,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 
 from agents.catalog import build_agent_catalog
-from askmamma.tools import audit_log, demo_forecast, demo_reorder_recommendations, langchain_tools, summarize_tools_for_trace, write_demo_report
+from askmamma.tools import audit_log, demo_forecast, demo_reorder_recommendations, langchain_tools, summarize_tools_for_trace
 from core.llm_provider import LLM_UNAVAILABLE_MESSAGE, current_runtime_status, get_chat_model, supports_langchain_agents
 from core.observability import configure_langsmith, redact_payload, safe_error_message, tracing_backend_name
 from db.database import get_connection, initialize_database, list_products, rows_to_dicts, utc_now
@@ -265,15 +265,19 @@ def _run_langchain_tool_agent(
 def _report_markdown(state: GraphState) -> dict[str, Any]:
     worker = state.get("specialist_output", {})
     route = state.get("route", "inventory")
-    report = write_demo_report("AskMamma Learning Project Report", output_format="md") if route == "report" else None
+    report = {
+        "title": "Inventory Pilot AI Report",
+        "generated_at": utc_now(),
+        "mode": "online",
+    } if route == "report" else None
     recommendations = demo_reorder_recommendations() if route in {"inventory", "forecast", "report"} else []
     forecast = demo_forecast(months=6) if route in {"forecast", "report"} else {}
     summary = worker.get("answer", state.get("answer", "")) or (report.get("summary") if report else "")
-    tool_names = worker.get("tools_called", state.get("tools_called", [])) or (["DemoReportWriterTool"] if report else [])
+    tool_names = worker.get("tools_called", state.get("tools_called", []))
     specialist_name = worker.get("selected_agent", state.get("selected_agent")) or ("ReportingAgent" if report else "SupervisorAgent")
     markdown = "\n".join(
         [
-            "# AskMamma Agent Summary",
+            "# Inventory Pilot AI Summary",
             f"- Route: {route}",
             f"- Specialist: {specialist_name}",
             f"- Tools: {', '.join(tool_names) or 'None'}",
@@ -294,8 +298,6 @@ def _report_markdown(state: GraphState) -> dict[str, Any]:
             "generated_report": report,
         },
     }
-    if report:
-        bundle["download"] = report
     return bundle
 
 
@@ -303,7 +305,7 @@ def supervisor_node(state: GraphState) -> GraphState:
     route = classify_route(state["user_input"])
     answer = None
     if route == "greeting":
-        answer = "Hello from AskMamma. I can help with inventory, forecasting, documents, reports, MCP, A2A, and interview-style project walkthroughs."
+        answer = "Hello from Inventory Pilot AI. I can help with inventory, forecasting, reorder recommendations, suppliers, reports, and documents."
     return {
         "route": route,
         "answer": answer,
@@ -356,22 +358,17 @@ def research_node(state: GraphState) -> GraphState:
 def report_node(state: GraphState) -> GraphState:
     bundle = _report_markdown(state)
     report_answer = bundle["markdown"]
-    tools_called = list(state.get("tools_called", []))
-    tool_outputs = list(state.get("tool_outputs", []))
-    if state.get("route") == "report" and bundle.get("download"):
-        tools_called.append("DemoReportWriterTool")
-        tool_outputs.append(bundle["download"])
     return {
         "answer": report_answer,
         "report_bundle": bundle,
         "route_path": _append_route(state, "ReportingAgent"),
         "intermediate_steps": _append_step(
             state,
-            {"agent": "ReportingAgent", "formats": list(bundle.keys()), "has_download": "download" in bundle},
+            {"agent": "ReportingAgent", "formats": list(bundle.keys()), "has_download": False},
         ),
         "selected_agent": state.get("selected_agent") or "ReportingAgent",
-        "tools_called": tools_called,
-        "tool_outputs": tool_outputs,
+        "tools_called": list(state.get("tools_called", [])),
+        "tool_outputs": list(state.get("tool_outputs", [])),
     }
 
 

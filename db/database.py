@@ -146,6 +146,19 @@ def initialize_database() -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS ai_generation_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                feature_name TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                llm_used INTEGER NOT NULL DEFAULT 0,
+                prompt TEXT NOT NULL,
+                response TEXT,
+                created_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                error_message TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS documents (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 file_name TEXT NOT NULL,
@@ -400,6 +413,70 @@ def dashboard_stats() -> dict[str, Any]:
         "predicted_high_demand_products": rows_to_dicts(high_demand),
         "recent_ai_actions": rows_to_dicts(recent_actions),
     }
+
+
+def log_ai_generation_event(
+    *,
+    feature_name: str,
+    provider: str,
+    model: str,
+    llm_used: bool,
+    prompt: str,
+    response: str | None,
+    created_at: str,
+    status: str,
+    error_message: str | None = None,
+) -> dict[str, Any]:
+    initialize_database()
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO ai_generation_events (
+                feature_name, provider, model, llm_used, prompt, response, created_at, status, error_message
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                feature_name,
+                provider,
+                model,
+                int(llm_used),
+                prompt,
+                response,
+                created_at,
+                status,
+                error_message,
+            ),
+        )
+        event_id = int(cursor.lastrowid)
+        row = connection.execute(
+            "SELECT * FROM ai_generation_events WHERE id = ?",
+            (event_id,),
+        ).fetchone()
+    event = dict(row) if row else {}
+    if event:
+        event["llm_used"] = bool(event["llm_used"])
+    return event
+
+
+def list_ai_generation_events(limit: int = 50, feature_name: str | None = None) -> list[dict[str, Any]]:
+    initialize_database()
+    query = """
+        SELECT *
+        FROM ai_generation_events
+    """
+    params: list[Any] = []
+    if feature_name:
+        query += " WHERE feature_name = ?"
+        params.append(feature_name)
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    with get_connection() as connection:
+        rows = connection.execute(query, params).fetchall()
+    events = rows_to_dicts(rows)
+    for event in events:
+        event["llm_used"] = bool(event["llm_used"])
+    return events
 
 
 if __name__ == "__main__":

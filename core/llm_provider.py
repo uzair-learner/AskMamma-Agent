@@ -13,7 +13,7 @@ from core import config
 from core.observability import configure_langsmith
 
 LLM_UNAVAILABLE_MESSAGE = (
-    "LLM is not configured or available. Please configure OpenAI, Azure OpenAI, or Ollama before using AskMamma."
+    "LLM is not configured or available. Please configure OpenAI, Azure OpenAI, or Ollama before using Inventory Pilot AI."
 )
 
 
@@ -122,12 +122,17 @@ def _ollama_model_available() -> bool:
     return configured == resolved or configured_base == resolved_base
 
 
+def _ollama_pull_model_name() -> str:
+    configured = (config.OLLAMA_MODEL or "").strip()
+    return configured.split(":", 1)[0] if configured else configured
+
+
 def current_model_name() -> str:
     if config.LLM_PROVIDER in {"azure", "azure_openai"}:
         return config.AZURE_OPENAI_DEPLOYMENT or "Not configured"
     if config.LLM_PROVIDER == "openai":
         return config.OPENAI_MODEL
-    return resolve_ollama_model_name()
+    return config.OLLAMA_MODEL
 
 
 def ollama_reachable() -> bool:
@@ -201,21 +206,25 @@ class OllamaProvider:
                             txt = first.get("response") or first.get("output") or first.get("content")
                             if txt:
                                 return str(txt).strip()
-                    # Fallback: return text body
+                    # Return the raw text body if the response shape is unexpected.
                     text = response.text.strip()
                     if text:
                         return text
                 except Exception as exc:
                     last_exc = exc
                     continue
-            # If none of the payloads worked, raise a descriptive error
+            runtime_error = _chat_model_runtime_error()
+            if runtime_error:
+                raise RuntimeError(runtime_error) from last_exc
             raise RuntimeError(
-                "Ollama is configured but not reachable or the model is not available. Start it with `ollama serve` and make sure model '{model_name}' is pulled."
+                f"Unable to get a response from Ollama model {config.OLLAMA_MODEL} at {config.OLLAMA_BASE_URL}"
             ) from last_exc
         except requests.RequestException as exc:
+            runtime_error = _chat_model_runtime_error()
+            if runtime_error:
+                raise RuntimeError(runtime_error) from exc
             raise RuntimeError(
-                "Ollama is configured but not reachable. Start it with `ollama serve` "
-                f"and make sure model `{model_name}` is pulled. Error: {exc}"
+                f"Unable to get a response from Ollama model {config.OLLAMA_MODEL} at {config.OLLAMA_BASE_URL}"
             ) from exc
 
 
@@ -365,16 +374,12 @@ def _chat_model_runtime_error() -> str | None:
     if not _dependency_installed("langchain_ollama"):
         return "langchain-ollama package is missing. Run: pip install langchain-ollama"
 
-    try:
-        models = _ollama_model_catalog()
-    except Exception as exc:
-        return f"Unable to connect to Ollama at {base_url}. Error: {exc}"
-
+    models = _ollama_model_catalog()
     if not models:
-        return f"Unable to connect to Ollama at {base_url} or no models were returned."
+        return f"Unable to connect to Ollama at {base_url}"
 
     if not _ollama_model_available():
-        return f"Ollama model {config.OLLAMA_MODEL} is not available. Run: ollama pull {config.OLLAMA_MODEL}"
+        return f"Ollama model {config.OLLAMA_MODEL} is not available. Run: ollama pull {_ollama_pull_model_name()}"
 
     return None
 

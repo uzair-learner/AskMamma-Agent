@@ -172,15 +172,12 @@ def test_reports_endpoint_returns_excel_download():
     response = client.get("/reports/askmamma")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["file_name"].endswith(".md")
-    assert payload["download_url"].endswith(payload["file_name"])
-
-    download = client.get(payload["download_url"])
-    assert download.status_code == 200
-    assert "text/markdown" in download.headers["content-type"] or "text/plain" in download.headers["content-type"]
-
-    report_path = config.REPORT_DIR / payload["file_name"]
-    assert report_path.exists()
+    assert payload["title"] == "Inventory Pilot AI Online Report"
+    assert payload["ai_source"] == "Ollama"
+    assert payload["model"] == config.OLLAMA_MODEL
+    assert isinstance(payload["llm_used"], bool)
+    assert payload["report_content"]
+    assert payload["generated_at"]
 
 
 def test_reports_list_returns_excel_entries():
@@ -189,8 +186,9 @@ def test_reports_list_returns_excel_entries():
     assert response.status_code == 200
     payload = response.json()
     assert payload
-    assert payload[0]["file_name"].endswith(".md")
-    assert payload[0]["download_url"].endswith(payload[0]["file_name"])
+    assert payload[0]["feature_name"] == "online_report"
+    assert payload[0]["model"] == config.OLLAMA_MODEL
+    assert "response" in payload[0]
 
 
 def test_agent_graph_endpoint():
