@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from api.backend import app
 from core import config
+from core.llm_provider import LLM_UNAVAILABLE_MESSAGE
 from scripts.seed_data import seed
 
 
@@ -53,7 +54,6 @@ def test_chat_endpoint_returns_graph_steps():
     assert payload["provider"]
     assert payload["model"] is not None
     assert isinstance(payload["llm_used"], bool)
-    assert isinstance(payload["fallback_used"], bool)
     assert payload["selected_agent"]
     assert isinstance(payload["response_time_ms"], int)
     assert payload["response_time_ms"] >= 0
@@ -135,13 +135,37 @@ def test_admin_diagnostics_endpoint():
     assert "model" in payload
     assert "ollama_base_url" in payload
     assert "ollama_reachable" in payload
-    assert "fallback_mode_active" in payload
     assert isinstance(payload["recent_requests"], list)
     if payload["recent_requests"]:
         recent = payload["recent_requests"][0]
         assert "provider" in recent
         assert "model" in recent
         assert "response_time_ms" in recent
+
+
+def test_chat_endpoint_returns_clear_message_when_llm_unavailable(monkeypatch):
+    from workflows.langgraph import workflow
+
+    monkeypatch.setattr(
+        workflow,
+        "current_runtime_status",
+        lambda: {
+            "provider": "Ollama",
+            "model": config.OLLAMA_MODEL,
+            "llm_used": False,
+            "ollama_base_url": config.OLLAMA_BASE_URL,
+            "ollama_reachable": False,
+        },
+    )
+
+    response = client.post(
+        "/agent/chat",
+        json={"message": "Which sample demo items are low in availability?", "session_id": "api-llm-unavailable"},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["answer"] == LLM_UNAVAILABLE_MESSAGE
+    assert payload["llm_used"] is False
 
 
 def test_reports_endpoint_returns_excel_download():

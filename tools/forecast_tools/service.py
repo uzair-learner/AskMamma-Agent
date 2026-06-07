@@ -38,7 +38,7 @@ def demo_history(identifier: str | None = None, months: int = 6) -> dict[str, An
 def demo_forecast(identifier: str | None = None, months: int = 6) -> dict[str, Any]:
     history = demo_history(identifier, months)
     if not history.get("found"):
-        return {"found": False, "message": "Insufficient sample history for a numeric forecast. Use the demo threshold as a fallback."}
+        return {"found": False, "message": "Insufficient sample history for a numeric forecast. Use the demo threshold instead."}
     monthly: dict[str, int] = defaultdict(int)
     item_totals: dict[str, int] = defaultdict(int)
     for record in history["records"]:
@@ -95,4 +95,3 @@ def demo_reorder_recommendations(identifier: str | None = None) -> list[dict[str
             }
         )
     return recommendations
-

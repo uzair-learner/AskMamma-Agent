@@ -155,7 +155,7 @@ def demo_forecast(identifier: str | None = None, months: int = 6) -> dict[str, A
     if not history.get("found"):
         return {
             "found": False,
-            "message": "Insufficient sample history for a numeric forecast. Use the demo threshold as a fallback.",
+            "message": "Insufficient sample history for a numeric forecast. Use the demo threshold instead.",
         }
 
     monthly: dict[str, int] = defaultdict(int)

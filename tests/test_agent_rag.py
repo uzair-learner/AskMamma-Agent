@@ -1,4 +1,5 @@
 from agents.orchestrator import get_session_messages, invoke_agent
+from core.llm_provider import LLM_UNAVAILABLE_MESSAGE
 from rag.retrieval import document_search, reindex_documents
 from scripts.seed_data import seed
 
@@ -51,7 +52,28 @@ def test_forecast_route_has_intermediate_steps():
     assert result["intermediate_steps"]
 
 
-def test_langsmith_disabled_falls_back_to_local_trace_backend(monkeypatch):
+def test_langsmith_disabled_uses_local_trace_backend(monkeypatch):
     monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
     result = invoke_agent("Hi", session_id="test-langsmith-disabled")
     assert result["trace_backend"] == "sqlite"
+
+
+def test_returns_clear_message_when_llm_unavailable(monkeypatch):
+    from workflows.langgraph import workflow
+
+    monkeypatch.setattr(
+        workflow,
+        "current_runtime_status",
+        lambda: {
+            "provider": "Ollama",
+            "model": "llama3.1",
+            "llm_used": False,
+            "ollama_base_url": "http://localhost:11434",
+            "ollama_reachable": False,
+        },
+    )
+
+    result = invoke_agent("Which sample demo items are low in availability?", session_id="test-llm-unavailable")
+    assert result["answer"] == LLM_UNAVAILABLE_MESSAGE
+    assert result["llm_used"] is False
+    assert result["selected_agent"] == "SupervisorAgent"

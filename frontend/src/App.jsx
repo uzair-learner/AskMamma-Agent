@@ -82,7 +82,7 @@ async function request(path, options = {}) {
       const payload = await response.json();
       message = payload.detail ?? payload.message ?? message;
     } catch {
-      // Keep fallback message when the payload is not JSON.
+      // Keep the default request error when the payload is not JSON.
     }
     throw new Error(message);
   }

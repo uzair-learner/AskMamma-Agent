@@ -11,6 +11,10 @@ from langchain_core.embeddings import Embeddings
 from core import config
 from core.observability import configure_langsmith
 
+LLM_UNAVAILABLE_MESSAGE = (
+    "LLM is not configured or available. Please configure OpenAI, Azure OpenAI, or Ollama before using AskMamma."
+)
+
 
 class LLMProvider(Protocol):
     name: str
@@ -40,12 +44,37 @@ def current_provider_name() -> str:
     return "Ollama"
 
 
+def _ollama_model_catalog() -> list[str]:
+    try:
+        response = requests.get(f"{config.OLLAMA_BASE_URL.rstrip('/')}/api/tags", timeout=3)
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError):
+        return []
+    models = payload.get("models", [])
+    return [str(model.get("name", "")).strip() for model in models if model.get("name")]
+
+
+def resolve_ollama_model_name() -> str:
+    configured = config.OLLAMA_MODEL.strip()
+    available = _ollama_model_catalog()
+    if not available:
+        return configured
+    if configured in available:
+        return configured
+    configured_base = configured.split(":", 1)[0]
+    for model_name in available:
+        if model_name.split(":", 1)[0] == configured_base:
+            return model_name
+    return available[0]
+
+
 def current_model_name() -> str:
     if config.LLM_PROVIDER in {"azure", "azure_openai"}:
         return config.AZURE_OPENAI_DEPLOYMENT or "Not configured"
     if config.LLM_PROVIDER == "openai":
         return config.OPENAI_MODEL
-    return config.OLLAMA_MODEL
+    return resolve_ollama_model_name()
 
 
 def ollama_reachable() -> bool:
@@ -64,10 +93,11 @@ class OllamaProvider:
             return False
 
     def generate(self, prompt: str) -> str:
+        model_name = resolve_ollama_model_name()
         try:
             response = requests.post(
                 f"{config.OLLAMA_BASE_URL.rstrip('/')}/api/generate",
-                json={"model": config.OLLAMA_MODEL, "prompt": prompt, "stream": False},
+                json={"model": model_name, "prompt": prompt, "stream": False},
                 timeout=30,
             )
             response.raise_for_status()
@@ -75,7 +105,7 @@ class OllamaProvider:
         except requests.RequestException as exc:
             raise RuntimeError(
                 "Ollama is configured but not reachable. Start it with `ollama serve` "
-                f"and make sure model `{config.OLLAMA_MODEL}` is pulled. Error: {exc}"
+                f"and make sure model `{model_name}` is pulled. Error: {exc}"
             ) from exc
 
 
@@ -211,6 +241,14 @@ def get_chat_model() -> Any | None:
             api_key=config.AZURE_OPENAI_API_KEY,
             temperature=0,
         )
+
+    if config.LLM_PROVIDER == "ollama" and OllamaProvider().available():
+        try:
+            from langchain_ollama import ChatOllama
+        except ImportError:
+            return None
+
+        return ChatOllama(model=resolve_ollama_model_name(), temperature=0, base_url=config.OLLAMA_BASE_URL)
 
     return None
 

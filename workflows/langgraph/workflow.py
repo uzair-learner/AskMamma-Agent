@@ -16,7 +16,7 @@ from langgraph.graph import END, START, StateGraph
 
 from agents.catalog import build_agent_catalog
 from askmamma.tools import audit_log, demo_forecast, demo_reorder_recommendations, langchain_tools, summarize_tools_for_trace, write_demo_report
-from core.llm_provider import current_runtime_status, get_chat_model, supports_langchain_agents
+from core.llm_provider import LLM_UNAVAILABLE_MESSAGE, current_runtime_status, get_chat_model, supports_langchain_agents
 from core.observability import configure_langsmith, redact_payload, safe_error_message, tracing_backend_name
 from db.database import get_connection, initialize_database, list_products, rows_to_dicts, utc_now
 from workflows.routing.classifier import classify_route
@@ -350,7 +350,7 @@ def document_node(state: GraphState) -> GraphState:
 
 
 def research_node(state: GraphState) -> GraphState:
-    raise RuntimeError("ResearchAgent requires an explicit implementation without fallback logic.")
+    raise RuntimeError("ResearchAgent requires an explicit implementation.")
 
 
 def report_node(state: GraphState) -> GraphState:
@@ -548,6 +548,8 @@ def invoke_agent(user_input: str, session_id: str | None = None) -> dict[str, An
     start = time.perf_counter()
     try:
         runtime = current_runtime_status()
+        if not runtime["llm_used"]:
+            raise RuntimeError(LLM_UNAVAILABLE_MESSAGE)
         final_state = GRAPH.invoke(
             {
                 "user_input": user_input,
@@ -568,8 +570,11 @@ def invoke_agent(user_input: str, session_id: str | None = None) -> dict[str, An
         error = None
     except Exception as exc:
         result = AgentResult(
-            answer=f"Sorry, I could not complete that request: {safe_error_message(exc)}",
+            answer=safe_error_message(exc),
             selected_agent="SupervisorAgent",
+            provider=runtime["provider"] if "runtime" in locals() else "",
+            model=runtime["model"] if "runtime" in locals() else "",
+            llm_used=False,
             trace_backend=tracing_backend_name(),
         )
         error = safe_error_message(exc)
