@@ -177,12 +177,13 @@ def _ai_message(prompt: str) -> dict[str, Any]:
             "llm_used": False,
             "ollama_base_url": config.OLLAMA_BASE_URL,
             "ollama_reachable": False,
+            "runtime_error": None,
         }
     payload = {
         "provider": runtime["provider"],
         "model": runtime["model"],
         "llm_used": False,
-        "message": LLM_UNAVAILABLE_MESSAGE,
+        "message": runtime.get("runtime_error") or LLM_UNAVAILABLE_MESSAGE,
     }
     if not runtime["llm_used"]:
         return payload
@@ -193,8 +194,8 @@ def _ai_message(prompt: str) -> dict[str, Any]:
             "llm_used": True,
             "message": response,
         }
-    except Exception:
-        return payload
+    except Exception as exc:
+        return {**payload, "message": safe_error_message(exc)}
 
 
 @app.get("/health")
@@ -404,6 +405,7 @@ def admin_diagnostics() -> dict[str, Any]:
         "model": runtime["model"],
         "ollama_base_url": runtime["ollama_base_url"],
         "ollama_reachable": runtime["ollama_reachable"],
+        "runtime_error": runtime.get("runtime_error"),
         "recent_requests": recent_requests,
     }
 

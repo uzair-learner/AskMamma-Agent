@@ -323,20 +323,75 @@ def _dependency_installed(module_name: str) -> bool:
     return find_spec(module_name) is not None
 
 
-def llm_runtime_available() -> bool:
+def _chat_model_runtime_error() -> str | None:
     if config.LLM_PROVIDER == "openai":
-        return bool(config.OPENAI_API_KEY and _dependency_installed("langchain_openai"))
+        if not config.OPENAI_API_KEY:
+            return "OPENAI_API_KEY is not configured."
+        if not _dependency_installed("langchain_openai"):
+            return "langchain-openai package is missing. Run: pip install langchain-openai"
+        return None
 
     if config.LLM_PROVIDER in {"azure", "azure_openai"}:
-        return bool(
-            AzureOpenAIProvider().available()
-            and _dependency_installed("langchain_openai")
-        )
+        missing = [
+            name
+            for name, value in {
+                "AZURE_OPENAI_API_KEY": config.AZURE_OPENAI_API_KEY,
+                "AZURE_OPENAI_ENDPOINT": config.AZURE_OPENAI_ENDPOINT,
+                "AZURE_OPENAI_DEPLOYMENT": config.AZURE_OPENAI_DEPLOYMENT,
+            }.items()
+            if not value
+        ]
+        if missing:
+            return f"Azure OpenAI is missing: {', '.join(missing)}"
+        if not _dependency_installed("langchain_openai"):
+            return "langchain-openai package is missing. Run: pip install langchain-openai"
+        return None
 
-    return bool(
-        OllamaProvider().available()
-        and _dependency_installed("langchain_ollama")
-    )
+    base_url = (config.OLLAMA_BASE_URL or "").strip()
+    if not base_url:
+        return "OLLAMA_BASE_URL is not configured."
+    if not _dependency_installed("langchain_ollama"):
+        return "langchain-ollama package is missing. Run: pip install langchain-ollama"
+
+    try:
+        models = _ollama_model_catalog()
+    except Exception as exc:
+        return f"Unable to connect to Ollama at {base_url}. Error: {exc}"
+
+    if not models:
+        return f"Unable to connect to Ollama at {base_url} or no models were returned."
+
+    return None
+
+
+def _create_ollama_chat_model() -> Any:
+    runtime_error = _chat_model_runtime_error()
+    if runtime_error:
+        raise RuntimeError(runtime_error)
+
+    from langchain_ollama import ChatOllama
+
+    model_name = resolve_ollama_model_name()
+    try:
+        return ChatOllama(model=model_name, temperature=0, base_url=config.OLLAMA_BASE_URL)
+    except TypeError:
+        try:
+            return ChatOllama(model=model_name, base_url=config.OLLAMA_BASE_URL)
+        except TypeError:
+            try:
+                return ChatOllama(model=model_name, temperature=0)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Unable to create ChatOllama for model {model_name} at {config.OLLAMA_BASE_URL}. Error: {exc}"
+                ) from exc
+    except Exception as exc:
+        raise RuntimeError(
+            f"Unable to create ChatOllama for model {model_name} at {config.OLLAMA_BASE_URL}. Error: {exc}"
+        ) from exc
+
+
+def llm_runtime_available() -> bool:
+    return _chat_model_runtime_error() is None
 
 
 def get_chat_model() -> Any | None:
@@ -344,12 +399,16 @@ def get_chat_model() -> Any | None:
 
     configure_langsmith()
 
-    if config.LLM_PROVIDER == "openai" and config.OPENAI_API_KEY:
+    runtime_error = _chat_model_runtime_error()
+    if runtime_error:
+        raise RuntimeError(runtime_error)
+
+    if config.LLM_PROVIDER == "openai":
         from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(model=config.OPENAI_MODEL, temperature=0, api_key=config.OPENAI_API_KEY)
 
-    if config.LLM_PROVIDER in {"azure", "azure_openai"} and AzureOpenAIProvider().available():
+    if config.LLM_PROVIDER in {"azure", "azure_openai"}:
         from langchain_openai import AzureChatOpenAI
 
         return AzureChatOpenAI(
@@ -360,31 +419,8 @@ def get_chat_model() -> Any | None:
             temperature=0,
         )
 
-    if config.LLM_PROVIDER == "ollama" and OllamaProvider().available():
-        try:
-            # Try common LangChain Ollama chat class names and constructor signatures.
-            try:
-                from langchain_ollama import ChatOllama as _ChatClass
-            except Exception:
-                try:
-                    from langchain_ollama import Ollama as _ChatClass
-                except Exception:
-                    return None
-
-            model_name = resolve_ollama_model_name()
-            # Attempt several constructor signatures for compatibility.
-            try:
-                return _ChatClass(model=model_name, temperature=0, base_url=config.OLLAMA_BASE_URL)
-            except TypeError:
-                try:
-                    return _ChatClass(model=model_name, base_url=config.OLLAMA_BASE_URL)
-                except TypeError:
-                    try:
-                        return _ChatClass(model=model_name, temperature=0)
-                    except Exception:
-                        return None
-        except ImportError:
-            return None
+    if config.LLM_PROVIDER == "ollama":
+        return _create_ollama_chat_model()
 
     return None
 
@@ -416,11 +452,13 @@ def get_embedding_provider() -> EmbeddingProvider | None:
 
 
 def current_runtime_status() -> dict[str, Any]:
-    llm_available = llm_runtime_available()
+    runtime_error = _chat_model_runtime_error()
+    llm_available = runtime_error is None
     return {
         "provider": current_provider_name(),
         "model": current_model_name(),
         "llm_used": llm_available,
         "ollama_base_url": config.OLLAMA_BASE_URL,
         "ollama_reachable": ollama_reachable(),
+        "runtime_error": runtime_error,
     }
