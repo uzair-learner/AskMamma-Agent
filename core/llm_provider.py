@@ -107,7 +107,19 @@ def resolve_ollama_model_name() -> str:
     for model_name in available:
         if model_name.split(":", 1)[0] == configured_base:
             return model_name
-    return available[0]
+    return configured
+
+
+def _ollama_model_available() -> bool:
+    configured = (config.OLLAMA_MODEL or "").strip()
+    if not configured:
+        return False
+    resolved = resolve_ollama_model_name()
+    if not resolved:
+        return False
+    configured_base = configured.split(":", 1)[0]
+    resolved_base = resolved.split(":", 1)[0]
+    return configured == resolved or configured_base == resolved_base
 
 
 def current_model_name() -> str:
@@ -360,6 +372,9 @@ def _chat_model_runtime_error() -> str | None:
 
     if not models:
         return f"Unable to connect to Ollama at {base_url} or no models were returned."
+
+    if not _ollama_model_available():
+        return f"Ollama model {config.OLLAMA_MODEL} is not available. Run: ollama pull {config.OLLAMA_MODEL}"
 
     return None
 

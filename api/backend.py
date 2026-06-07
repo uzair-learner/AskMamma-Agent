@@ -198,6 +198,42 @@ def _ai_message(prompt: str) -> dict[str, Any]:
         return {**payload, "message": safe_error_message(exc)}
 
 
+def _ai_explanation_message(
+    prompt: str,
+    *,
+    unavailable_message: str = "AI explanation is unavailable because LLM is not configured or available.",
+) -> dict[str, Any]:
+    try:
+        runtime = current_runtime_status()
+    except Exception:
+        runtime = {
+            "provider": "Unavailable",
+            "model": "Unavailable",
+            "llm_used": False,
+            "ollama_base_url": config.OLLAMA_BASE_URL,
+            "ollama_reachable": False,
+            "runtime_error": None,
+        }
+
+    payload = {
+        "provider": runtime["provider"],
+        "model": runtime["model"],
+        "llm_used": False,
+        "ai_explanation": unavailable_message,
+    }
+    if not runtime["llm_used"]:
+        return payload
+    try:
+        response = get_llm_provider().generate(prompt)
+        return {
+            **payload,
+            "llm_used": True,
+            "ai_explanation": response,
+        }
+    except Exception:
+        return payload
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "environment": config.APP_ENV}
@@ -320,6 +356,23 @@ def ai_forecasts_insight() -> dict[str, Any]:
     return _ai_message(prompt)
 
 
+@app.get("/forecast/ai-explanation")
+def forecast_ai_explanation() -> dict[str, Any]:
+    recommendations = demo_reorder_recommendations()[:8]
+    top_forecast = demo_forecast(recommendations[0]["sku"], months=6) if recommendations else demo_forecast(months=6)
+    payload = {
+        "recommendations": recommendations,
+        "forecast_example": top_forecast,
+    }
+    prompt = (
+        "You are explaining forecast results for an operations page. Use only the provided JSON. "
+        "Explain in plain English why demand is increasing or decreasing, which products are risky, "
+        "which items may need attention soon, and give a concise forecast summary.\n\n"
+        f"{json.dumps(payload, default=str)}"
+    )
+    return _ai_explanation_message(prompt)
+
+
 @app.get("/ai/insights/reorder")
 def ai_reorder_insight() -> dict[str, Any]:
     recommendations = demo_reorder_recommendations()[:10]
@@ -330,6 +383,18 @@ def ai_reorder_insight() -> dict[str, Any]:
         f"{json.dumps(recommendations, default=str)}"
     )
     return _ai_message(prompt)
+
+
+@app.get("/reorder/ai-explanation")
+def reorder_ai_explanation() -> dict[str, Any]:
+    recommendations = demo_reorder_recommendations()[:10]
+    prompt = (
+        "You are explaining reorder recommendations. Use only the provided JSON. "
+        "Explain why each item should be reordered, identify the highest priority reorder item, "
+        "describe the risk if reorder is delayed, and give a concise purchase recommendation.\n\n"
+        f"{json.dumps(recommendations, default=str)}"
+    )
+    return _ai_explanation_message(prompt)
 
 
 @app.get("/ai/insights/suppliers")

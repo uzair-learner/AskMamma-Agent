@@ -484,7 +484,8 @@ function DataSourceBadge({ text, tone = "local" }) {
 }
 
 function AIInsightPanel({ insight }) {
-  if (!insight?.message) {
+  const text = insight?.ai_explanation ?? insight?.message;
+  if (!text) {
     return null;
   }
   const badgeText = insight.llm_used
@@ -493,9 +494,10 @@ function AIInsightPanel({ insight }) {
   return (
     <div className="watch-card architecture-note">
       <DataSourceBadge text={badgeText} tone={insight.llm_used ? "ai" : "local"} />
-      <p>{insight.message}</p>
+      <p>{text}</p>
       <div className="meta-row">
         <span>Provider: {insight.provider || "Unavailable"}</span>
+        <span>Model: {insight.model || "Unavailable"}</span>
         <span>LLM Used: {insight.llm_used ? "Yes" : "No"}</span>
       </div>
     </div>
@@ -693,6 +695,7 @@ function ForecastsPage({ forecastAlerts, onOpenReorder, insight }) {
           </button>
         </div>
         <DataSourceBadge text="Calculated from local inventory/demo data" />
+        <div className="section-label">AI Forecast Explanation</div>
         <AIInsightPanel insight={insight} />
         <div className="info-banner">
           Forecasts are calculated using historical demo sales or movement data and forecasting logic. AI may explain the result, but it does not invent stock or forecast numbers.
@@ -732,6 +735,7 @@ function ReorderPage({ recommendations, insight }) {
           </div>
         </div>
         <DataSourceBadge text="Calculated from local inventory/demo data" />
+        <div className="section-label">AI Reorder Explanation</div>
         <AIInsightPanel insight={insight} />
         <div className="list-stack">
           {recommendations.map((item) => (
@@ -1070,10 +1074,10 @@ function insightPath(routeState, selectedProductId) {
     return `/ai/insights/products?${params.toString()}`;
   }
   if (routeState.route === "forecasts") {
-    return "/ai/insights/forecasts";
+    return "/forecast/ai-explanation";
   }
   if (routeState.route === "reorder") {
-    return "/ai/insights/reorder";
+    return "/reorder/ai-explanation";
   }
   if (routeState.route === "suppliers") {
     return "/ai/insights/suppliers";
