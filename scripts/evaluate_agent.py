@@ -18,6 +18,11 @@ def evaluate_cases() -> dict[str, object]:
     cases = json.loads((ROOT / "data_evaluation.json").read_text(encoding="utf-8"))
     results = []
     session_id = "eval-session"
+    categories = {
+        "simple_answer": {"passed": 0, "total": 0},
+        "rag_quality": {"passed": 0, "total": 0},
+        "forecast_quality": {"passed": 0, "total": 0},
+    }
 
     for case in cases:
         result = invoke_agent(case["question"], session_id=session_id)
@@ -31,10 +36,19 @@ def evaluate_cases() -> dict[str, object]:
         intermediate_ok = bool(result.get("intermediate_steps"))
 
         ok = route_ok and tools_ok and answer_ok and steps_ok and intermediate_ok
+        category = "simple_answer"
+        if "DocumentSearchTool" in case["expected_tools"]:
+            category = "rag_quality"
+        elif "DemoForecastTool" in case["expected_tools"]:
+            category = "forecast_quality"
+        categories[category]["total"] += 1
+        if ok:
+            categories[category]["passed"] += 1
         results.append(
             {
                 "question": case["question"],
                 "passed": ok,
+                "category": category,
                 "route_ok": route_ok,
                 "tools_ok": tools_ok,
                 "answer_ok": answer_ok,
@@ -48,7 +62,7 @@ def evaluate_cases() -> dict[str, object]:
         )
 
     passed = sum(1 for item in results if item["passed"])
-    return {"passed": passed, "total": len(results), "results": results}
+    return {"passed": passed, "total": len(results), "results": results, "categories": categories}
 
 
 def main() -> None:

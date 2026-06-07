@@ -14,6 +14,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
 
 from core import config
+from core.llm_provider import get_embedding_provider
 from db.database import get_connection, initialize_database, rows_to_dicts, utc_now
 
 
@@ -51,6 +52,9 @@ class LocalHashEmbeddings(Embeddings):
 
 
 def embeddings_model() -> Embeddings:
+    provider = get_embedding_provider()
+    if provider is not None:
+        return provider.embeddings()
     return LocalHashEmbeddings()
 
 
@@ -218,7 +222,9 @@ def document_search(query: str, limit: int = 5) -> dict[str, Any]:
 
     if not results:
         return {"found": False, "message": "No relevant document was found.", "results": []}
-    return {"found": True, "results": results, "retriever": "faiss+local-hash-embeddings"}
+    provider = get_embedding_provider()
+    retriever_name = f"faiss+{provider.name}-embeddings" if provider is not None else "faiss+local-hash-embeddings"
+    return {"found": True, "results": results, "retriever": retriever_name}
 
 
 def save_uploaded_document(file_name: str, content: bytes) -> dict[str, Any]:

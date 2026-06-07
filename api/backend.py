@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,7 @@ app.add_middleware(
 
 RATE_LIMIT_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
 FRONTEND_DIST_DIR = config.ROOT_DIR / "frontend" / "dist"
+TASK_STORE: dict[str, dict[str, Any]] = {}
 
 
 class DemoItemPayload(BaseModel):
@@ -97,6 +99,20 @@ class TaskPayload(BaseModel):
     status: str = "submitted"
 
 
+class TaskRecord(BaseModel):
+    task_id: str
+    status: str
+    assigned_agent: str | None = None
+    input_payload: dict[str, Any]
+    output_payload: dict[str, Any] | None = None
+    error_payload: dict[str, Any] | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    submitted_at: str
+    started_at: str | None = None
+    completed_at: str | None = None
+    failed_at: str | None = None
+
+
 class DocumentSearchPayload(BaseModel):
     query: str = Field(..., min_length=1)
     limit: int = Field(default=5, ge=1, le=10)
@@ -136,6 +152,10 @@ def _rpc_success(request_id: str | int | None, result: Any) -> dict[str, Any]:
 
 def _rpc_error(request_id: str | int | None, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+
+
+def _utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 @app.get("/health")
@@ -240,6 +260,16 @@ def mcp_tools() -> list[dict[str, Any]]:
     return agent_tools()
 
 
+@app.get("/mcp/metadata")
+def mcp_metadata() -> dict[str, Any]:
+    return {
+        "server_name": "AskMamma MCP Adapter",
+        "transport": "http+jsonrpc",
+        "methods": ["tools/list", "tools/call"],
+        "tool_count": len(tool_registry()),
+    }
+
+
 @app.post("/mcp/rpc")
 def mcp_rpc(payload: MCPRpcPayload, request: Request) -> dict[str, Any]:
     _enforce_rate_limit(_request_key(request, "mcp-rpc"))
@@ -260,14 +290,39 @@ def mcp_rpc(payload: MCPRpcPayload, request: Request) -> dict[str, Any]:
 @app.post("/agent/tasks")
 def agent_tasks(payload: TaskPayload, request: Request) -> dict[str, Any]:
     _enforce_rate_limit(_request_key(request, "agent-tasks"))
-    result = invoke_agent(payload.message, payload.task_id)
-    return {
-        "task_id": payload.task_id,
-        "from_agent": payload.from_agent,
-        "metadata": payload.metadata,
-        "status": "completed",
-        "response": result,
-    }
+    task_record = TaskRecord(
+        task_id=payload.task_id,
+        status="submitted",
+        assigned_agent=payload.from_agent,
+        input_payload={"message": payload.message},
+        metadata=payload.metadata,
+        submitted_at=_utcnow(),
+    )
+    TASK_STORE[payload.task_id] = task_record.model_dump()
+    TASK_STORE[payload.task_id]["status"] = "running"
+    TASK_STORE[payload.task_id]["started_at"] = _utcnow()
+
+    try:
+        result = invoke_agent(payload.message, payload.task_id)
+        TASK_STORE[payload.task_id]["status"] = "completed"
+        TASK_STORE[payload.task_id]["assigned_agent"] = result.get("selected_agent") or payload.from_agent
+        TASK_STORE[payload.task_id]["output_payload"] = result
+        TASK_STORE[payload.task_id]["completed_at"] = _utcnow()
+    except Exception as exc:
+        TASK_STORE[payload.task_id]["status"] = "failed"
+        TASK_STORE[payload.task_id]["error_payload"] = {"message": safe_error_message(exc)}
+        TASK_STORE[payload.task_id]["failed_at"] = _utcnow()
+        raise
+
+    return TASK_STORE[payload.task_id]
+
+
+@app.get("/agent/tasks/{task_id}")
+def agent_task_status(task_id: str) -> dict[str, Any]:
+    task = TASK_STORE.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
 
 
 @app.post("/documents/upload")
@@ -307,6 +362,7 @@ def agent_card() -> dict[str, Any]:
         "name": "AskMamma Assistant",
         "description": "AI-powered AskMamma agent with LangGraph routing, LangChain tools, embedding-backed RAG, memory, demo/sample data, reports, and traces.",
         "version": "2.0.0",
+        "endpoint_url": "/agent/chat",
         "endpoint": "/agent/chat",
         "capabilities": {
             "tool_calling": True,
@@ -328,6 +384,10 @@ def agent_card() -> dict[str, Any]:
         ],
         "supported_input_modes": ["text", "task", "jsonrpc"],
         "supported_output_modes": ["text", "json", "markdown"],
+        "examples": [
+            {"input": "Which sample demo items are low in availability right now?", "route": "AskMammaActionAgent"},
+            {"input": "What does the return policy say about unopened items?", "route": "DocumentAgent"},
+        ],
     }
 
 

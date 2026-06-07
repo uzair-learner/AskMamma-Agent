@@ -12,6 +12,7 @@ def test_greeting_uses_supervisor_only():
     assert result["selected_agent"] == "SupervisorAgent"
     assert result["tools_called"] == []
     assert result["route_path"] == ["SupervisorAgent"]
+    assert result["trace_backend"] in {"sqlite", "langsmith"}
 
 
 def test_demo_low_availability_routes_to_action_tool():
@@ -46,3 +47,9 @@ def test_forecast_route_has_intermediate_steps():
     assert result["selected_agent"] == "ForecastAgent"
     assert "DemoForecastTool" in result["tools_called"]
     assert result["intermediate_steps"]
+
+
+def test_langsmith_disabled_falls_back_to_local_trace_backend(monkeypatch):
+    monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+    result = invoke_agent("Hi", session_id="test-langsmith-disabled")
+    assert result["trace_backend"] == "sqlite"

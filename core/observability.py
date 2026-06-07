@@ -20,6 +20,8 @@ def configure_langsmith() -> bool:
 
     enabled = bool(config.LANGSMITH_API_KEY and config.LANGSMITH_TRACING)
     if not enabled:
+        os.environ["LANGCHAIN_TRACING_V2"] = "false"
+        os.environ.pop("LANGSMITH_API_KEY", None)
         return False
 
     os.environ["LANGCHAIN_TRACING_V2"] = "true"

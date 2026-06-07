@@ -3,6 +3,7 @@
 AskMamma-Agent is a local AI agent demo that combines:
 - FastAPI backend
 - Streamlit UI
+- React presentation UI
 - LangGraph multi-agent orchestration
 - LangChain tool calling
 - embedding-backed RAG over local documents
@@ -17,14 +18,15 @@ The seeded catalog, availability, partner, movement, forecast, and report flows 
 In simple terms:
 
 ```text
-Streamlit UI
+React UI / Streamlit UI
   -> FastAPI API
     -> LangGraph supervisor
-      -> AskMammaActionAgent
+      -> Inventory Agent
       -> ForecastAgent
       -> DocumentAgent
       -> ReportAgent
       -> QualityReviewAgent
+      -> Final response
     -> LangChain tools
     -> SQLite state + local trace fallback
     -> FAISS vector store for document retrieval
@@ -33,17 +35,19 @@ Streamlit UI
 
 What each layer does:
 - `api/backend.py`: public API, task endpoints, MCP-style adapter, and metadata endpoints
-- `agents/orchestrator.py`: LangGraph routing plus deterministic fallback when no paid chat model is configured
+- `agents/orchestrator.py`: LangGraph supervisor-worker routing plus reviewer/reflection pass and deterministic fallback when no paid chat model is configured
 - `askmamma/tools.py`: typed tools with clear schemas for item lookup, availability, partner lookup, forecast, recommendations, document search, reporting, and audit logging
-- `rag/retrieval.py`: document ingestion, chunking, local embeddings, and FAISS retrieval
+- `rag/retrieval.py`: document ingestion, chunking, embedding selection, and FAISS semantic retrieval
 - `db/database.py`: SQLite schema for demo items, memory, traces, and documents
 - `ui/app.py`: Streamlit dashboard and chat interface
+- `frontend/`: React presentation frontend served by FastAPI after build
 
 ## Folder Structure
 
 ```text
 api/backend.py            FastAPI backend
 ui/app.py                 Streamlit dashboard/chat frontend
+frontend/                 React presentation frontend
 agents/orchestrator.py    LangGraph multi-agent orchestration
 askmamma/tools.py         LangChain-compatible AskMamma demo tools
 rag/retrieval.py          Document ingestion and embedding retrieval
@@ -84,7 +88,7 @@ This script:
 Open:
 
 ```text
-http://localhost:8501
+http://127.0.0.1:8000
 ```
 
 ## Manual Setup
@@ -126,12 +130,14 @@ LANGSMITH_API_KEY=
 LANGSMITH_ENDPOINT=https://api.smith.langchain.com
 LANGSMITH_PROJECT=askmamma-agent
 LANGSMITH_TRACING=true
+LANGCHAIN_TRACING_V2=true
 ```
 
 Provider behavior:
 - `LLM_PROVIDER=openai`: uses LangChain `ChatOpenAI` if `OPENAI_API_KEY` is set
 - `LLM_PROVIDER=azure`: uses LangChain `AzureChatOpenAI` if Azure settings are set
 - `LLM_PROVIDER=ollama`: keeps local Ollama generation config available, while the agent falls back to deterministic graph behavior when no tool-calling chat model is configured
+- embeddings: prefer OpenAI/Azure embeddings when configured, otherwise use deterministic local hash embeddings for offline FAISS retrieval
 
 ## Run Backend
 
@@ -187,7 +193,7 @@ http://127.0.0.1:8000
 
 The document pipeline now uses:
 - `RecursiveCharacterTextSplitter`
-- local deterministic embeddings
+- OpenAI/Azure embeddings when configured, otherwise deterministic local embeddings
 - `FAISS`
 - local vector store persistence in `vector_store/`
 
@@ -211,18 +217,31 @@ Upload supports `.pdf`, `.txt`, `.md`, and `.csv`.
 
 This project includes a lightweight MCP-style adapter:
 - `GET /mcp/tools` lists available tools
+- `GET /mcp/metadata` exposes discovery metadata for the adapter
 - `POST /mcp/rpc` supports JSON-RPC style `tools/list` and `tools/call`
 
 The agent card at `/.well-known/agent-card.json` includes:
 - name
 - description
 - version
-- endpoint
+- endpoint and endpoint URL
 - capabilities
 - authentication
 - skills
 - supported input modes
 - supported output modes
+- example prompts
+
+`POST /agent/tasks` returns A2A-style task records with:
+- task id
+- status
+- assigned agent
+- input payload
+- output payload
+- error payload
+- submitted, started, completed, or failed timestamps
+
+`GET /agent/tasks/{task_id}` can be used for simple polling.
 
 ## LangSmith
 
@@ -232,6 +251,7 @@ If you set:
 - `LANGSMITH_API_KEY`
 - `LANGSMITH_ENDPOINT`
 - `LANGSMITH_PROJECT`
+- `LANGCHAIN_TRACING_V2=true`
 
 the app enables LangSmith tracing automatically. If not configured, the project still stores local traces in SQLite.
 
@@ -269,6 +289,9 @@ It checks:
 - selected route
 - expected tools called
 - route path and intermediate steps
+- simple-answer cases
+- RAG answer quality
+- forecast answer quality
 
 ## Tests
 

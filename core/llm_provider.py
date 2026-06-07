@@ -1,4 +1,4 @@
-"""Provider abstraction for optional LLM-backed answers and agents."""
+"""Provider abstraction for optional LLM-backed answers, agents, and embeddings."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 import requests
+from langchain_core.embeddings import Embeddings
 
 from core import config
 from core.observability import configure_langsmith
@@ -18,6 +19,16 @@ class LLMProvider(Protocol):
         ...
 
     def available(self) -> bool:
+        ...
+
+
+class EmbeddingProvider(Protocol):
+    name: str
+
+    def available(self) -> bool:
+        ...
+
+    def embeddings(self) -> Embeddings:
         ...
 
 
@@ -100,6 +111,58 @@ class AzureOpenAIProvider:
         return llm.invoke(prompt).content
 
 
+@dataclass
+class OpenAIEmbeddingProvider:
+    name: str = "openai"
+
+    def available(self) -> bool:
+        return bool(config.OPENAI_API_KEY)
+
+    def embeddings(self) -> Embeddings:
+        if not config.OPENAI_API_KEY:
+            raise RuntimeError("OPENAI_API_KEY is not configured.")
+        from langchain_openai import OpenAIEmbeddings
+
+        return OpenAIEmbeddings(
+            model=config.OPENAI_EMBEDDING_MODEL,
+            api_key=config.OPENAI_API_KEY,
+        )
+
+
+@dataclass
+class AzureOpenAIEmbeddingProvider:
+    name: str = "azure"
+
+    def available(self) -> bool:
+        return bool(
+            config.AZURE_OPENAI_API_KEY
+            and config.AZURE_OPENAI_ENDPOINT
+            and config.AZURE_OPENAI_EMBEDDING_DEPLOYMENT
+        )
+
+    def embeddings(self) -> Embeddings:
+        missing = [
+            name
+            for name, value in {
+                "AZURE_OPENAI_API_KEY": config.AZURE_OPENAI_API_KEY,
+                "AZURE_OPENAI_ENDPOINT": config.AZURE_OPENAI_ENDPOINT,
+                "AZURE_OPENAI_EMBEDDING_DEPLOYMENT": config.AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
+            }.items()
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(f"Azure OpenAI embeddings are missing: {', '.join(missing)}")
+
+        from langchain_openai import AzureOpenAIEmbeddings
+
+        return AzureOpenAIEmbeddings(
+            azure_deployment=config.AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
+            api_version=config.AZURE_OPENAI_API_VERSION,
+            azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
+            api_key=config.AZURE_OPENAI_API_KEY,
+        )
+
+
 def get_llm_provider() -> LLMProvider:
     if config.LLM_PROVIDER == "openai":
         return OpenAIProvider()
@@ -134,3 +197,22 @@ def get_chat_model() -> Any | None:
 
 def supports_langchain_agents() -> bool:
     return get_chat_model() is not None
+
+
+def get_embedding_provider() -> EmbeddingProvider | None:
+    if config.LLM_PROVIDER == "openai":
+        provider = OpenAIEmbeddingProvider()
+        return provider if provider.available() else None
+
+    if config.LLM_PROVIDER in {"azure", "azure_openai"}:
+        provider = AzureOpenAIEmbeddingProvider()
+        return provider if provider.available() else None
+
+    if config.OPENAI_API_KEY:
+        return OpenAIEmbeddingProvider()
+
+    azure_provider = AzureOpenAIEmbeddingProvider()
+    if azure_provider.available():
+        return azure_provider
+
+    return None

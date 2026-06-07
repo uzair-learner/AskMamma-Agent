@@ -69,6 +69,7 @@ class AgentResult:
     route_path: list[str] = field(default_factory=list)
     review_notes: list[str] = field(default_factory=list)
     trace_backend: str = "sqlite"
+    task_status: str = "completed"
 
 
 def save_message(session_id: str, role: str, content: str) -> None:
@@ -299,6 +300,29 @@ def _run_langchain_tool_agent(
 def _deterministic_action(message: str, session_id: str) -> AgentResult:
     lowered = message.lower()
     identifier = _extract_identifier(message, session_id)
+    if "low" in lowered and ("stock" in lowered or "availability" in lowered):
+        result = demo_status()
+        low = result["low_stock"]
+        if not low:
+            answer = "No sample demo items are currently below their demo threshold."
+        else:
+            answer = "In the sample demo catalog, low-availability demo items are:\n" + "\n".join(
+                f"- {p['sku']} **{p['name']}**: {p['stock_quantity']} on hand, demo threshold {p['reorder_level']}"
+                for p in low
+            )
+        return AgentResult(answer, "AskMammaActionAgent", ["DemoAvailabilityTool"], [{"identifier": None}], [result])
+
+    if ("out" in lowered or "unavailable" in lowered) and ("stock" in lowered or "availability" in lowered):
+        result = demo_status()
+        out = result["out_of_stock"]
+        answer = (
+            "In the sample demo catalog, unavailable demo items are:\n"
+            + "\n".join(f"- {p['sku']} **{p['name']}**" for p in out)
+            if out
+            else "No sample demo items are unavailable."
+        )
+        return AgentResult(answer, "AskMammaActionAgent", ["DemoAvailabilityTool"], [{"identifier": None}], [result])
+
     if ("supplier" in lowered or "partner" in lowered) and identifier:
         result = demo_partner_lookup(identifier)
         if not result.get("found"):
@@ -313,26 +337,6 @@ def _deterministic_action(message: str, session_id: str) -> AgentResult:
                 f"(email: {partner.get('email')}, lead time: {partner.get('lead_time_days')} days)."
             )
         return AgentResult(answer, "AskMammaActionAgent", ["DemoPartnerLookupTool"], [{"identifier": identifier}], [result])
-
-        if "low" in lowered and ("stock" in lowered or "availability" in lowered):
-            result = demo_status()
-            low = result["low_stock"]
-            if not low:
-                answer = "No sample demo items are currently below their demo threshold."
-            else:
-                answer = "In the sample demo catalog, low-availability demo items are:\n" + "\n".join(
-                    f"- {p['sku']} **{p['name']}**: {p['stock_quantity']} on hand, demo threshold {p['reorder_level']}"
-                    for p in low
-                )
-        return AgentResult(answer, "AskMammaActionAgent", ["DemoAvailabilityTool"], [{"identifier": None}], [result])
-
-        if ("out" in lowered or "unavailable" in lowered) and ("stock" in lowered or "availability" in lowered):
-            result = demo_status()
-            out = result["out_of_stock"]
-            answer = "In the sample demo catalog, unavailable demo items are:\n" + "\n".join(
-                f"- {p['sku']} **{p['name']}**" for p in out
-            ) if out else "No sample demo items are unavailable."
-        return AgentResult(answer, "AskMammaActionAgent", ["DemoAvailabilityTool"], [{"identifier": None}], [result])
 
     if identifier:
         result = demo_status(identifier)

@@ -76,9 +76,30 @@ def test_agent_tasks_endpoint():
     )
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
-    assert response.json()["response"]["selected_agent"] == "ReportAgent"
+    assert response.json()["assigned_agent"] == "ReportAgent"
+    assert response.json()["output_payload"]["selected_agent"] == "ReportAgent"
+    assert response.json()["submitted_at"]
+    assert response.json()["started_at"]
+    assert response.json()["completed_at"]
+
+
+def test_agent_tasks_polling_endpoint():
+    client.post(
+        "/agent/tasks",
+        json={"task_id": "task-lookup", "message": "Which sample demo items are low in availability?"},
+    )
+    response = client.get("/agent/tasks/task-lookup")
+    assert response.status_code == 200
+    assert response.json()["task_id"] == "task-lookup"
+    assert response.json()["status"] == "completed"
 
 
 def test_stock_movement_requires_confirmation():
     response = client.post("/demo/availability/restock", json={"product_id": 1, "quantity": 2, "reason": "demo"})
     assert response.status_code == 400
+
+
+def test_mcp_metadata_endpoint():
+    response = client.get("/mcp/metadata")
+    assert response.status_code == 200
+    assert response.json()["transport"] == "http+jsonrpc"

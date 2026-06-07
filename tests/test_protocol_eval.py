@@ -22,8 +22,10 @@ def test_agent_card_has_a2a_style_fields():
     payload = client.get("/.well-known/agent-card.json").json()
     assert {"name", "description", "version", "endpoint", "capabilities", "authentication", "skills"}.issubset(payload)
     assert "jsonrpc" in payload["supported_input_modes"]
+    assert payload["examples"]
 
 
 def test_evaluation_script_passes():
     summary = evaluate_cases()
     assert summary["passed"] == summary["total"]
+    assert summary["categories"]["simple_answer"]["passed"] >= 1
