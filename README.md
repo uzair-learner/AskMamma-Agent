@@ -1,6 +1,16 @@
 # AskMamma Agent System
 
-AskMamma-Agent is a local AI agent application with a FastAPI backend, Streamlit UI, LLM provider integration, RAG/document retrieval, tools/actions, tests, scripts, and environment-based configuration. The included seeded data demonstrates AskMamma tool use with sample products, availability checks, suppliers, forecasting, document Q&A, reports, memory, tracing, evaluation, and lightweight MCP/A2A-style discovery endpoints.
+AskMamma-Agent is a local AI agent system demonstrating:
+- FastAPI backend
+- Streamlit UI
+- RAG/document retrieval
+- tool/action calling
+- memory
+- tracing
+- tests
+- local SQLite runtime state
+
+The repository includes seeded sample demo item and history data used only for demonstration of availability checks, partner lookup, forecasting, and report generation. That sample data is not the core identity of the project.
 
 ## Architecture
 
@@ -9,7 +19,7 @@ Streamlit UI
   -> FastAPI backend
     -> SupervisorAgent
       -> AskMammaActionAgent -> AskMamma tools -> SQLite
-      -> ForecastAgent -> sales + forecast tools -> SQLite
+      -> ForecastAgent -> demo history + forecast tools -> SQLite
       -> DocumentAgent -> local RAG search -> document_chunks
       -> ReportAgent -> markdown reports -> outputs/reports
       -> QualityReviewAgent -> final answer checks
@@ -42,7 +52,7 @@ outputs/reports/          Generated reports
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
-copy .env.example .env
+copy .env.template .env
 ```
 
 Seed the local database and index sample documents:
@@ -51,7 +61,7 @@ Seed the local database and index sample documents:
 python scripts/seed_data.py
 ```
 
-The seed script creates a reproducible local demo database with 12 suppliers, a broad AskMamma sample catalog, 18 months of sales history, movement records, and indexed knowledge-base documents. The generated SQLite file is runtime data and is intentionally ignored by Git.
+The seed script creates a reproducible local demo database with 12 sample partners, a broad AskMamma sample catalog, 18 months of demo history, movement records, and indexed knowledge-base documents. The generated SQLite file is runtime data and is intentionally ignored by Git.
 
 ## Run Ollama
 
@@ -108,15 +118,15 @@ powershell -ExecutionPolicy Bypass -File scripts/start_all.ps1
 
 - `GET /health`
 - `GET /dashboard`
-- `GET /products`
-- `GET /products/{id}`
-- `POST /products`
-- `PUT /products/{id}`
-- `DELETE /products/{id}?confirm=true`
-- `GET /availability/low`
-- `GET /availability/out`
-- `POST /availability/restock`
-- `POST /forecast/demand`
+- `GET /demo/items`
+- `GET /demo/items/{id}`
+- `POST /demo/items`
+- `PUT /demo/items/{id}`
+- `DELETE /demo/items/{id}?confirm=true`
+- `GET /demo/availability/low`
+- `GET /demo/availability/out`
+- `POST /demo/availability/restock`
+- `POST /demo/forecast`
 - `POST /agent/chat`
 - `POST /agent/run-task`
 - `GET /agent/sessions/{session_id}`
@@ -125,7 +135,8 @@ powershell -ExecutionPolicy Bypass -File scripts/start_all.ps1
 - `POST /documents/reindex`
 - `POST /documents/search`
 - `GET /reports/askmamma`
-- `GET /reports/forecast`
+- `GET /reports/demo`
+- `GET /reports/demo-forecast`
 - `GET /.well-known/agent-card.json`
 - `GET /agent/tools`
 - `GET /mcp/tools`
@@ -137,10 +148,10 @@ Try:
 
 ```text
 Hi
-Which products are low in stock?
-Do we have USB-C Cable 2m available?
-Which supplier provides that item?
-Based on previous sales, what demand do you expect next month for Packing Tape?
+Which sample demo items are low in availability?
+Do we have USB-C Cable 2m available in the sample demo catalog?
+Which demo partner provides that item?
+Based on the sample demo history, what demand do you expect next month for Packing Tape?
 Search uploaded documents and tell me the return policy.
 Generate a short AskMamma report.
 ```
@@ -158,7 +169,7 @@ Search documents:
 ```powershell
 Invoke-RestMethod -Method Post http://localhost:8000/documents/search `
   -ContentType application/json `
-  -Body '{"query":"return policy unopened products"}'
+  -Body '{"query":"return policy unopened demo items"}'
 ```
 
 Upload supports `.pdf`, `.txt`, `.md`, and `.csv`.
@@ -192,7 +203,7 @@ The Streamlit UI also has a `View traces` button.
 python scripts/evaluate_agent.py
 ```
 
-The evaluation checks greetings, low-stock routing, supplier lookup, forecasting, document search, report generation, and memory follow-ups.
+The evaluation checks greetings, demo low-availability routing, partner lookup, forecasting, document search, report generation, and memory follow-ups.
 
 ## Tests
 
@@ -210,7 +221,7 @@ docker compose up
 
 - Backend not reachable: start `uvicorn api.backend:app --port 8000`.
 - Frontend error: confirm backend health at `http://localhost:8000/health`.
-- Empty products: run `python scripts/seed_data.py`.
+- Empty demo items: run `python scripts/seed_data.py`.
 - Document search has no results: run `POST /documents/reindex`.
 - Ollama error: run `ollama serve` and `ollama pull llama3.1`.
-- Delete product blocked: pass `confirm=true`; destructive actions require explicit confirmation.
+- Delete demo item blocked: pass `confirm=true`; destructive actions require explicit confirmation.

@@ -23,15 +23,19 @@ from db.database import (
 )
 from rag.retrieval import document_search, reindex_documents, save_uploaded_document
 from askmamma.tools import (
-    add_inventory_movement,
-    demand_forecast,
-    reorder_recommendations,
+    add_demo_movement,
+    demo_forecast,
+    demo_reorder_recommendations,
     tool_registry,
-    write_inventory_report,
+    write_demo_report,
 )
 
 
-app = FastAPI(title="AskMamma Agent API", version="1.0.0")
+app = FastAPI(
+    title="AskMamma Agent API",
+    description="Local AI agent demo with FastAPI, Streamlit, RAG, tool calling, memory, tracing, tests, SQLite runtime state, and clearly labeled sample demo data.",
+    version="1.0.0",
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.CORS_ORIGINS,
@@ -41,7 +45,7 @@ app.add_middleware(
 )
 
 
-class ProductPayload(BaseModel):
+class DemoItemPayload(BaseModel):
     sku: str
     name: str
     category: str
@@ -56,13 +60,13 @@ class ProductPayload(BaseModel):
     expiry_date: str | None = None
 
 
-class RestockPayload(BaseModel):
+class DemoAvailabilityPayload(BaseModel):
     product_id: int
     quantity: int = Field(gt=0)
     reason: str = "restock"
 
 
-class ForecastPayload(BaseModel):
+class DemoForecastPayload(BaseModel):
     identifier: str | None = None
     months: int = Field(default=6, ge=1, le=24)
 
@@ -100,72 +104,57 @@ def dashboard() -> dict[str, Any]:
     return dashboard_stats()
 
 
-@app.get("/products")
-def products(search: str | None = None, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+@app.get("/demo/items", summary="List sample demo items")
+def demo_items(search: str | None = None, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
     return list_products(search=search, limit=limit, offset=offset)
 
 
-@app.get("/products/{product_id}")
-def product(product_id: int) -> dict[str, Any]:
-    item = get_product(product_id)
+@app.get("/demo/items/{item_id}", summary="Get one sample demo item")
+def demo_item(item_id: int) -> dict[str, Any]:
+    item = get_product(item_id)
     if not item:
-        raise HTTPException(status_code=404, detail="Product not found")
+        raise HTTPException(status_code=404, detail="Demo item not found")
     return item
 
 
-@app.post("/products")
-def product_create(payload: ProductPayload) -> dict[str, Any]:
+@app.post("/demo/items", summary="Create a sample demo item")
+def demo_item_create(payload: DemoItemPayload) -> dict[str, Any]:
     return create_product(payload.model_dump())
 
 
-@app.put("/products/{product_id}")
-def product_update(product_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-    item = update_product(product_id, payload)
+@app.put("/demo/items/{item_id}", summary="Update a sample demo item")
+def demo_item_update(item_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    item = update_product(item_id, payload)
     if not item:
-        raise HTTPException(status_code=404, detail="Product not found")
+        raise HTTPException(status_code=404, detail="Demo item not found")
     return item
 
 
-@app.delete("/products/{product_id}")
-def product_delete(product_id: int, confirm: bool = False) -> dict[str, Any]:
+@app.delete("/demo/items/{item_id}", summary="Delete a sample demo item")
+def demo_item_delete(item_id: int, confirm: bool = False) -> dict[str, Any]:
     if not confirm:
-        raise HTTPException(status_code=400, detail="Set confirm=true to delete a product.")
-    return {"deleted": delete_product(product_id)}
+        raise HTTPException(status_code=400, detail="Set confirm=true to delete a demo item.")
+    return {"deleted": delete_product(item_id)}
 
 
-@app.get("/inventory/low-stock")
-def inventory_low_stock() -> list[dict[str, Any]]:
+@app.get("/demo/availability/low", summary="List low-availability sample demo items")
+def demo_availability_low() -> list[dict[str, Any]]:
     return low_stock_products()
 
 
-@app.get("/availability/low")
-def availability_low() -> list[dict[str, Any]]:
-    return low_stock_products()
-
-
-@app.get("/inventory/out-of-stock")
-def inventory_out_of_stock() -> list[dict[str, Any]]:
+@app.get("/demo/availability/out", summary="List unavailable sample demo items")
+def demo_availability_out() -> list[dict[str, Any]]:
     return out_of_stock_products()
 
 
-@app.get("/availability/out")
-def availability_out() -> list[dict[str, Any]]:
-    return out_of_stock_products()
+@app.post("/demo/availability/restock", summary="Record sample demo availability replenishment")
+def demo_availability_restock(payload: DemoAvailabilityPayload) -> dict[str, Any]:
+    return add_demo_movement(payload.product_id, "stock_in", payload.quantity, payload.reason)
 
 
-@app.post("/inventory/restock")
-def inventory_restock(payload: RestockPayload) -> dict[str, Any]:
-    return add_inventory_movement(payload.product_id, "stock_in", payload.quantity, payload.reason)
-
-
-@app.post("/availability/restock")
-def availability_restock(payload: RestockPayload) -> dict[str, Any]:
-    return add_inventory_movement(payload.product_id, "stock_in", payload.quantity, payload.reason)
-
-
-@app.post("/forecast/demand")
-def forecast_demand(payload: ForecastPayload) -> dict[str, Any]:
-    return demand_forecast(payload.identifier, payload.months)
+@app.post("/demo/forecast", summary="Run a sample demo forecast")
+def demo_forecast_run(payload: DemoForecastPayload) -> dict[str, Any]:
+    return demo_forecast(payload.identifier, payload.months)
 
 
 @app.post("/agent/chat")
@@ -226,36 +215,36 @@ def documents_search(payload: DocumentSearchPayload) -> dict[str, Any]:
     return document_search(payload.query, payload.limit)
 
 
-@app.get("/reports/inventory")
-def reports_inventory() -> dict[str, Any]:
-    return write_inventory_report()
+@app.get("/reports/demo", summary="Generate a sample demo report")
+def reports_demo() -> dict[str, Any]:
+    return write_demo_report()
 
 
 @app.get("/reports/askmamma")
 def reports_askmamma() -> dict[str, Any]:
-    return write_inventory_report("AskMamma Operations Report")
+    return write_demo_report("AskMamma Operations Report")
 
 
-@app.get("/reports/forecast")
-def reports_forecast() -> dict[str, Any]:
-    return demand_forecast(months=6)
+@app.get("/reports/demo-forecast", summary="Generate a sample demo forecast snapshot")
+def reports_demo_forecast() -> dict[str, Any]:
+    return demo_forecast(months=6)
 
 
 @app.get("/.well-known/agent-card.json")
 def agent_card() -> dict[str, Any]:
     return {
         "name": "AskMamma Assistant",
-        "description": "AI-powered AskMamma agent with tools, memory, RAG, forecasting, reports, and traces.",
+        "description": "AI-powered AskMamma agent with tools, memory, RAG, demo/sample data, reports, and traces.",
         "version": "1.0.0",
         "endpoint": "/agent/chat",
         "supported_input_modes": ["text", "task"],
         "supported_output_modes": ["text", "json", "markdown"],
         "authentication": "none for local development",
         "skills": [
-            "askmamma_lookup",
-            "low_stock_analysis",
-            "demand_forecast",
+            "demo_item_lookup",
+            "demo_availability_analysis",
+            "demo_forecast",
             "document_search",
-            "report_generation",
+            "demo_report_generation",
         ],
     }

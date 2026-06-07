@@ -39,17 +39,17 @@ except Exception as exc:
     st.stop()
 
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("Total Products", dashboard["total_products"])
-col2.metric("Low Stock", dashboard["low_stock_products"])
-col3.metric("Out of Stock", dashboard["out_of_stock_products"])
+col1.metric("Sample Items", dashboard["total_products"])
+col2.metric("Low Availability", dashboard["low_stock_products"])
+col3.metric("Unavailable", dashboard["out_of_stock_products"])
 high_demand = dashboard.get("predicted_high_demand_products", [])
-col4.metric("High Demand Signals", len(high_demand))
+col4.metric("Forecast Signals", len(high_demand))
 
 left, right = st.columns([1.25, 1])
 
 with left:
-    st.subheader("Products")
-    search = st.text_input("Search products", "")
+    st.subheader("Sample Demo Items")
+    search = st.text_input("Search sample demo items", "")
     button_cols = st.columns(5)
     if button_cols[0].button("Refresh data"):
         st.rerun()
@@ -57,14 +57,14 @@ with left:
         report = api_get("/reports/askmamma")
         st.success(report["summary"])
     if button_cols[2].button("Run demand forecast"):
-        forecast = api_post("/forecast/demand", {"months": 6})
+        forecast = api_post("/demo/forecast", {"months": 6})
         st.info(forecast.get("explanation", forecast.get("message")))
     if button_cols[3].button("View traces"):
         st.session_state.show_traces = not st.session_state.get("show_traces", False)
     if button_cols[4].button("Ask AI"):
         st.session_state.focus_chat = True
 
-    products = api_get("/products", search=search or None, limit=100)
+    products = api_get("/demo/items", search=search or None, limit=100)
     if products:
         df = pd.DataFrame(products)
         visible = [
@@ -79,7 +79,7 @@ with left:
         ]
         st.dataframe(df[[column for column in visible if column in df.columns]], use_container_width=True)
     else:
-        st.caption("No products found.")
+        st.caption("No sample demo items found.")
 
     if st.session_state.get("show_traces", False):
         st.subheader("Recent Agent Traces")
@@ -96,7 +96,7 @@ with right:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    prompt = st.chat_input("Ask about stock, suppliers, forecasts, documents, or reports")
+    prompt = st.chat_input("Ask about demo items, availability, partners, forecasts, documents, or reports")
     if prompt:
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):

@@ -13,14 +13,14 @@ def test_greeting_uses_no_tools():
     assert result["tools_called"] == []
 
 
-def test_low_stock_routes_to_action_tool():
-    result = invoke_agent("Which products are low in stock?", session_id="test-low-stock")
+def test_demo_low_availability_routes_to_action_tool():
+    result = invoke_agent("Which sample demo items are low in availability?", session_id="test-low-stock")
     assert result["selected_agent"] == "AskMammaActionAgent"
-    assert "AvailabilityStatusTool" in result["tools_called"]
+    assert "DemoAvailabilityTool" in result["tools_called"]
 
 
 def test_document_search_finds_return_policy():
-    result = document_search("return policy unopened products")
+    result = document_search("return policy unopened demo items")
     assert result["found"] is True
     assert any("return_policy" in item["file_name"] for item in result["results"])
 

@@ -12,23 +12,23 @@ from typing import Any
 from db.database import get_connection, initialize_database, list_products, rows_to_dicts, utc_now
 from rag.retrieval import document_search
 from askmamma.tools import (
-    demand_forecast,
-    inventory_status,
-    product_search,
-    reorder_recommendations,
-    sales_history,
-    supplier_lookup,
+    demo_forecast,
+    demo_status,
+    demo_item_search,
+    demo_reorder_recommendations,
+    demo_history,
+    demo_partner_lookup,
     summarize_tools_for_trace,
-    write_inventory_report,
+    write_demo_report,
 )
 
 
 SYSTEM_PROMPT = """
 You are AskMamma Assistant, a tool-using AI agent for AskMamma demo operations.
-Never invent product data, stock levels, supplier details, or forecast numbers.
-Use tools for availability, supplier, sales, forecast, document, and report answers.
-If sales history is insufficient, say so and provide a conservative fallback.
-Confirm before destructive actions such as deleting products or major stock adjustments.
+Never invent sample demo item data, availability levels, partner details, or forecast numbers.
+Use tools for demo availability, partners, history, forecasts, documents, and reports.
+If demo history is insufficient, say so and provide a conservative fallback.
+Confirm before destructive actions such as deleting demo items or major availability adjustments.
 Do not reveal secrets or environment variables.
 """.strip()
 
@@ -105,17 +105,20 @@ def _extract_identifier(message: str, session_id: str) -> str | None:
     if quoted:
         return quoted[0]
     lowered = message.lower()
-    for product in list_products(limit=500):
-        if product["sku"].lower() in lowered or product["name"].lower() in lowered:
-            return product["sku"]
+    for item in list_products(limit=500):
+        if item["sku"].lower() in lowered or item["name"].lower() in lowered:
+            return item["sku"]
     stop = {
         "which",
         "products",
         "product",
+        "items",
+        "item",
         "are",
         "is",
         "low",
         "stock",
+        "availability",
         "supplier",
         "provides",
         "available",
@@ -147,9 +150,9 @@ def _extract_identifier(message: str, session_id: str) -> str | None:
     for previous in reversed(get_session_messages(session_id)):
         content = previous["content"]
         content_lower = content.lower()
-        for product in list_products(limit=500):
-            if product["sku"].lower() in content_lower or product["name"].lower() in content_lower:
-                return product["sku"]
+        for item in list_products(limit=500):
+            if item["sku"].lower() in content_lower or item["name"].lower() in content_lower:
+                return item["sku"]
         match = re.search(r"(?:SKU\s+)?([A-Z]{2,}-\d{3})", content)
         if match:
             return match.group(1)
@@ -174,64 +177,64 @@ class AskMammaActionAgent:
     def run(self, message: str, session_id: str) -> AgentResult:
         lowered = message.lower()
         identifier = _extract_identifier(message, session_id)
-        if "supplier" in lowered and identifier:
-            result = supplier_lookup(identifier)
+        if ("supplier" in lowered or "partner" in lowered) and identifier:
+            result = demo_partner_lookup(identifier)
             if not result.get("found"):
                 answer = result["message"]
             else:
-                product = inventory_status(identifier).get("product")
-                if product:
-                    remember_session_value(session_id, "last_sku", product["sku"])
-                supplier = result["supplier"]
+                item_info = demo_status(identifier).get("item")
+                if item_info:
+                    remember_session_value(session_id, "last_sku", item_info["sku"])
+                partner = result.get("partner")
                 answer = (
-                    f"**{result['product']}** is supplied by {supplier['name']} "
-                    f"(email: {supplier['email']}, lead time: {supplier['lead_time_days']} days)."
+                    f"In the sample demo catalog, **{result.get('item')}** is supplied by {partner.get('name')} "
+                    f"(email: {partner.get('email')}, lead time: {partner.get('lead_time_days')} days)."
                 )
-            return AgentResult(answer, self.name, ["SupplierLookupTool"], [{"identifier": identifier}], [result])
+            return AgentResult(answer, self.name, ["DemoPartnerLookupTool"], [{"identifier": identifier}], [result])
 
-        if "low" in lowered and "stock" in lowered:
-            result = inventory_status()
+        if "low" in lowered and ("stock" in lowered or "availability" in lowered):
+            result = demo_status()
             low = result["low_stock"]
             if not low:
-                answer = "No products are currently below reorder level."
+                answer = "No sample demo items are currently below their demo threshold."
             else:
-                answer = "Low-stock products:\n" + "\n".join(
-                    f"- {p['sku']} **{p['name']}**: {p['stock_quantity']} on hand, reorder level {p['reorder_level']}"
+                answer = "Low-availability demo items:\n" + "\n".join(
+                    f"- {p['sku']} **{p['name']}**: {p['stock_quantity']} on hand, demo threshold {p['reorder_level']}"
                     for p in low
                 )
-            return AgentResult(answer, self.name, ["AvailabilityStatusTool"], [{"identifier": None}], [result])
+            return AgentResult(answer, self.name, ["DemoAvailabilityTool"], [{"identifier": None}], [result])
 
-        if "out" in lowered and "stock" in lowered:
-            result = inventory_status()
+        if ("out" in lowered or "unavailable" in lowered) and ("stock" in lowered or "availability" in lowered):
+            result = demo_status()
             out = result["out_of_stock"]
-            answer = "Out-of-stock products:\n" + "\n".join(
+            answer = "Unavailable demo items:\n" + "\n".join(
                 f"- {p['sku']} **{p['name']}**" for p in out
-            ) if out else "No products are out of stock."
-            return AgentResult(answer, self.name, ["AvailabilityStatusTool"], [{"identifier": None}], [result])
+            ) if out else "No sample demo items are unavailable."
+            return AgentResult(answer, self.name, ["DemoAvailabilityTool"], [{"identifier": None}], [result])
 
         if identifier:
-            result = inventory_status(identifier)
+            result = demo_status(identifier)
             if not result.get("found"):
-                search = product_search(identifier)
-                answer = "No exact stock match found. Similar products:\n" + "\n".join(
+                search = demo_item_search(identifier)
+                answer = "No exact demo item match found. Similar demo items:\n" + "\n".join(
                     f"- {p['sku']} **{p['name']}** ({p['stock_quantity']} on hand)" for p in search[:5]
                 )
-                return AgentResult(answer, self.name, ["AvailabilityStatusTool", "ProductSearchTool"], [{"identifier": identifier}, {"query": identifier}], [result, search])
-            product = result["product"]
-            remember_session_value(session_id, "last_sku", product["sku"])
+                return AgentResult(answer, self.name, ["DemoAvailabilityTool", "DemoItemSearchTool"], [{"identifier": identifier}, {"query": identifier}], [result, search])
+            item = result.get("item")
+            remember_session_value(session_id, "last_sku", item["sku"])
             answer = (
-                f"**{product['name']}** ({product['sku']}) has {product['stock_quantity']} units on hand. "
-                f"Reorder level: {product['reorder_level']}. Price: ${product['price']:.2f}. "
-                f"Supplier: {product.get('supplier_name')}. "
-                f"Status: {'out of stock' if result['out_of_stock'] else 'low stock' if result['low_stock'] else 'in stock'}."
+                f"In the sample demo catalog, **{item['name']}** ({item['sku']}) has {item['stock_quantity']} units on hand. "
+                f"Demo threshold: {item['reorder_level']}. Price: ${item['price']:.2f}. "
+                f"Partner: {item.get('supplier_name')}. "
+                f"Status: {'unavailable' if result['out_of_stock'] else 'low availability' if result['low_stock'] else 'available'}."
             )
-            return AgentResult(answer, self.name, ["AvailabilityStatusTool"], [{"identifier": identifier}], [result])
+            return AgentResult(answer, self.name, ["DemoAvailabilityTool"], [{"identifier": identifier}], [result])
 
-        result = product_search(message)
-        answer = "Matching products:\n" + "\n".join(
+        result = demo_item_search(message)
+        answer = "Matching demo items:\n" + "\n".join(
             f"- {p['sku']} **{p['name']}**: {p['stock_quantity']} on hand" for p in result[:10]
         )
-        return AgentResult(answer, self.name, ["ProductSearchTool"], [{"query": message}], [result])
+        return AgentResult(answer, self.name, ["DemoItemSearchTool"], [{"query": message}], [result])
 
 
 class ForecastAgent:
@@ -239,21 +242,21 @@ class ForecastAgent:
 
     def run(self, message: str, session_id: str) -> AgentResult:
         identifier = _extract_identifier(message, session_id)
-        history = sales_history(identifier, months=6)
-        forecast = demand_forecast(identifier, months=6)
-        if history.get("product"):
-            remember_session_value(session_id, "last_sku", history["product"]["sku"])
+        history = demo_history(identifier, months=6)
+        forecast = demo_forecast(identifier, months=6)
+        if history.get("item"):
+            remember_session_value(session_id, "last_sku", history["item"]["sku"])
         if not forecast.get("found"):
             answer = forecast["message"]
         else:
             answer = (
-                f"Expected next-month demand is **{forecast['predicted_quantity']} units**. "
+                f"Based on sample demo history, expected next-month demand is **{forecast['predicted_quantity']} units**. "
                 f"{forecast['explanation']}"
             )
         return AgentResult(
             answer,
             self.name,
-            ["SalesHistoryTool", "DemandForecastTool"],
+            ["DemoHistoryTool", "DemoForecastTool"],
             [{"identifier": identifier, "months": 6}, {"identifier": identifier, "months": 6}],
             [history, forecast],
         )
@@ -279,13 +282,13 @@ class ReportAgent:
     name = "ReportAgent"
 
     def run(self, message: str, session_id: str) -> AgentResult:
-        report = write_inventory_report("AskMamma Operations Report")
-        recs = reorder_recommendations()
-        answer = f"{report['summary']}. It includes {len(recs)} reorder recommendations."
+        report = write_demo_report("AskMamma Operations Report")
+        recs = demo_reorder_recommendations()
+        answer = f"{report['summary']}. It includes {len(recs)} sample demo replenishment recommendations."
         return AgentResult(
             answer,
             self.name,
-            ["ReportWriterTool", "ReorderRecommendationTool"],
+            ["DemoReportWriterTool", "DemoRecommendationTool"],
             [{"title": "AskMamma Operations Report"}, {"identifier": None}],
             [report, recs],
         )
@@ -321,11 +324,11 @@ class SupervisorAgent:
             return "greeting"
         if any(word in lowered for word in ["document", "policy", "manual", "contract", "return", "uploaded"]):
             return "document"
-        if any(word in lowered for word in ["forecast", "demand", "next month", "sales history", "high-demand"]):
+        if any(word in lowered for word in ["forecast", "demand", "next month", "sales history", "history", "high-demand"]):
             return "forecast"
         if any(word in lowered for word in ["report", "summary"]):
             return "report"
-        if any(word in lowered for word in ["reorder", "restock", "stockout", "supplier", "stock", "available", "product", "sku"]):
+        if any(word in lowered for word in ["reorder", "restock", "stockout", "supplier", "partner", "stock", "availability", "available", "product", "item", "sku"]):
             return "actions"
         return "actions"
 
@@ -333,7 +336,7 @@ class SupervisorAgent:
         route = self.route(message)
         if route == "greeting":
             return AgentResult(
-                "Hello. I can help with AskMamma demo availability checks, suppliers, forecasts, reports, and document search.",
+                "Hello. I can help with AskMamma demo items, availability checks, partners, forecasts, reports, and document search.",
                 self.name,
             )
         if route == "document":

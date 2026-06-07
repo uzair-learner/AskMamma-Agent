@@ -32,45 +32,45 @@ class ToolCall(BaseModel):
 
 def tool_registry() -> list[ToolCall]:
     return [
-        ToolCall(name="ProductSearchTool", description="Search AskMamma demo items by name, SKU, category, supplier, or description.", input_schema={"query": "string"}),
-        ToolCall(name="AvailabilityStatusTool", description="Return quantity, threshold, low-availability status, and unavailable status.", input_schema={"identifier": "string optional"}),
-        ToolCall(name="SupplierLookupTool", description="Find supplier information for a product.", input_schema={"identifier": "string"}),
-        ToolCall(name="SalesHistoryTool", description="Retrieve previous sales for a product or category.", input_schema={"identifier": "string optional", "months": "integer"}),
-        ToolCall(name="DemandForecastTool", description="Predict future demand using moving average and trend adjustment.", input_schema={"identifier": "string optional", "months": "integer"}),
-        ToolCall(name="ReorderRecommendationTool", description="Recommend reorder quantities from stock, reorder levels, sales, and lead time.", input_schema={"identifier": "string optional"}),
+        ToolCall(name="DemoItemSearchTool", description="Search sample AskMamma demo items by name, SKU, category, partner, or description.", input_schema={"query": "string"}),
+        ToolCall(name="DemoAvailabilityTool", description="Return quantity, threshold, low-availability status, and unavailable status for sample demo items.", input_schema={"identifier": "string optional"}),
+        ToolCall(name="DemoPartnerLookupTool", description="Find partner information for a sample demo item.", input_schema={"identifier": "string"}),
+        ToolCall(name="DemoHistoryTool", description="Retrieve sample history for a demo item or category.", input_schema={"identifier": "string optional", "months": "integer"}),
+        ToolCall(name="DemoForecastTool", description="Predict demo demand using moving average and trend adjustment based on sample history.", input_schema={"identifier": "string optional", "months": "integer"}),
+        ToolCall(name="DemoRecommendationTool", description="Recommend sample replenishment quantities from demo availability, thresholds, history, and lead time.", input_schema={"identifier": "string optional"}),
         ToolCall(name="DocumentSearchTool", description="Search indexed documents using local RAG retrieval.", input_schema={"query": "string"}),
-        ToolCall(name="ReportWriterTool", description="Generate an AskMamma operations report and save it under outputs/reports.", input_schema={"title": "string optional"}),
-        ToolCall(name="AddInventoryMovementTool", description="Record stock-in, stock-out, or adjustment movement.", input_schema={"product_id": "integer", "movement_type": "string", "quantity": "integer", "reason": "string"}),
+        ToolCall(name="DemoReportWriterTool", description="Generate a sample AskMamma operations report and save it under outputs/reports.", input_schema={"title": "string optional"}),
+        ToolCall(name="DemoMovementTool", description="Record sample stock-in, stock-out, or adjustment movement.", input_schema={"product_id": "integer", "movement_type": "string", "quantity": "integer", "reason": "string"}),
         ToolCall(name="AuditLogTool", description="Save agent actions and tool calls.", input_schema={"session_id": "string", "message": "string"}),
     ]
 
 
-def product_search(query: str) -> list[dict[str, Any]]:
+def demo_item_search(query: str) -> list[dict[str, Any]]:
     return list_products(search=query, limit=25)
 
 
-def inventory_status(identifier: str | None = None) -> dict[str, Any]:
+def demo_status(identifier: str | None = None) -> dict[str, Any]:
     if identifier:
         product = find_product(identifier)
         if not product:
-            return {"found": False, "message": f"No product found for `{identifier}`."}
+            return {"found": False, "message": f"No sample demo item found for `{identifier}`."}
         return {
             "found": True,
-            "product": product,
+            "item": product,
             "low_stock": product["stock_quantity"] > 0 and product["stock_quantity"] <= product["reorder_level"],
             "out_of_stock": product["stock_quantity"] <= 0,
         }
     return {"low_stock": low_stock_products(), "out_of_stock": out_of_stock_products()}
 
 
-def supplier_lookup(identifier: str) -> dict[str, Any]:
+def demo_partner_lookup(identifier: str) -> dict[str, Any]:
     product = find_product(identifier)
     if not product:
-        return {"found": False, "message": f"No product found for `{identifier}`."}
+        return {"found": False, "message": f"No sample item found for `{identifier}`."}
     return {
         "found": True,
-        "product": product["name"],
-        "supplier": {
+        "item": product["name"],
+        "partner": {
             "name": product.get("supplier_name"),
             "email": product.get("contact_email"),
             "lead_time_days": product.get("lead_time_days"),
@@ -78,14 +78,14 @@ def supplier_lookup(identifier: str) -> dict[str, Any]:
     }
 
 
-def sales_history(identifier: str | None = None, months: int = 6) -> dict[str, Any]:
+def demo_history(identifier: str | None = None, months: int = 6) -> dict[str, Any]:
     params: list[Any] = [f"-{months * 30} days"]
     product_clause = ""
     product = None
     if identifier:
         product = find_product(identifier)
         if not product:
-            return {"found": False, "message": f"No product found for `{identifier}`."}
+            return {"found": False, "message": f"No sample item found for `{identifier}`."}
         product_clause = "AND s.product_id = ?"
         params.append(product["id"])
     with get_connection() as connection:
@@ -101,15 +101,15 @@ def sales_history(identifier: str | None = None, months: int = 6) -> dict[str, A
             params,
         ).fetchall()
     records = rows_to_dicts(rows)
-    return {"found": bool(records), "product": product, "records": records}
+    return {"found": bool(records), "item": product, "records": records}
 
 
-def demand_forecast(identifier: str | None = None, months: int = 6) -> dict[str, Any]:
-    history = sales_history(identifier, months)
+def demo_forecast(identifier: str | None = None, months: int = 6) -> dict[str, Any]:
+    history = demo_history(identifier, months)
     if not history.get("found"):
         return {
             "found": False,
-            "message": "Insufficient sales history for a numeric forecast. Use reorder levels as a fallback.",
+            "message": "Insufficient sample history for a numeric forecast. Use the demo threshold as a fallback.",
         }
 
     monthly: dict[str, int] = defaultdict(int)
@@ -131,11 +131,11 @@ def demand_forecast(identifier: str | None = None, months: int = 6) -> dict[str,
 
     method = "3-month moving average with simple trend adjustment"
     explanation = (
-        f"Used {len(values)} monthly sales buckets. Last values: {values[-3:]}. "
+        f"Used {len(values)} monthly demo history buckets. Last values: {values[-3:]}. "
         f"Trend adjustment: {trend:.1f}. Predicted next-month demand: {prediction:.1f} units."
     )
     with get_connection() as connection:
-        product_id = history.get("product", {}).get("id") if history.get("product") else None
+        product_id = history.get("item", {}).get("id") if history.get("item") else None
         connection.execute(
             """
             INSERT INTO forecasts (product_id, category, forecast_period, predicted_quantity, method, explanation, created_at)
@@ -149,41 +149,41 @@ def demand_forecast(identifier: str | None = None, months: int = 6) -> dict[str,
         "method": method,
         "explanation": explanation,
         "monthly_sales": dict(monthly),
-        "top_products": sorted(product_totals.items(), key=lambda item: item[1], reverse=True)[:5],
+        "top_items": sorted(product_totals.items(), key=lambda item: item[1], reverse=True)[:5],
     }
 
 
-def reorder_recommendations(identifier: str | None = None) -> list[dict[str, Any]]:
+def demo_reorder_recommendations(identifier: str | None = None) -> list[dict[str, Any]]:
     products = [find_product(identifier)] if identifier else low_stock_products() + out_of_stock_products()
     recommendations: list[dict[str, Any]] = []
     for product in [item for item in products if item]:
-        forecast = demand_forecast(product["sku"], months=6)
+        forecast = demo_forecast(product["sku"], months=6)
         predicted = forecast.get("predicted_quantity", 0) if forecast.get("found") else product["reorder_quantity"]
         target = max(product["reorder_quantity"], int(predicted) + product["reorder_level"])
         needed = max(0, target - product["stock_quantity"])
         recommendations.append(
             {
-                "product_id": product["id"],
+                "item_id": product["id"],
                 "sku": product["sku"],
                 "name": product["name"],
                 "current_stock": product["stock_quantity"],
                 "reorder_level": product["reorder_level"],
                 "recommended_quantity": needed,
                 "supplier": product.get("supplier_name"),
-                "reason": f"Target stock {target} based on reorder policy and demand forecast.",
+                "reason": f"Target quantity {target} based on demo threshold policy and demo forecast.",
             }
         )
     return recommendations
 
 
-def add_inventory_movement(product_id: int, movement_type: str, quantity: int, reason: str = "") -> dict[str, Any]:
+def add_demo_movement(product_id: int, movement_type: str, quantity: int, reason: str = "") -> dict[str, Any]:
     if movement_type not in {"stock_in", "stock_out", "adjustment"}:
         raise ValueError("movement_type must be stock_in, stock_out, or adjustment")
     if quantity <= 0:
         raise ValueError("quantity must be positive")
     product = get_product(product_id)
     if not product:
-        raise ValueError(f"Product {product_id} not found")
+        raise ValueError(f"Demo item {product_id} not found")
 
     delta = quantity if movement_type == "stock_in" else -quantity
     if movement_type == "adjustment":
@@ -201,15 +201,15 @@ def add_inventory_movement(product_id: int, movement_type: str, quantity: int, r
             "UPDATE products SET stock_quantity = stock_quantity + ?, updated_at = ? WHERE id = ?",
             (delta, utc_now(), product_id),
         )
-    return {"product": get_product(product_id), "movement_type": movement_type, "quantity": quantity}
+    return {"item": get_product(product_id), "movement_type": movement_type, "quantity": quantity}
 
 
-def write_inventory_report(title: str = "AskMamma Operations Report") -> dict[str, Any]:
+def write_demo_report(title: str = "AskMamma Operations Report") -> dict[str, Any]:
     config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
     low = low_stock_products()
     out = out_of_stock_products()
-    recs = reorder_recommendations()
-    forecast = demand_forecast(months=6)
+    recs = demo_reorder_recommendations()
+    forecast = demo_forecast(months=6)
     file_name = f"askmamma-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
     path = config.REPORT_DIR / file_name
     lines = [
@@ -218,25 +218,25 @@ def write_inventory_report(title: str = "AskMamma Operations Report") -> dict[st
         f"Generated: {utc_now()}",
         "",
         "## Executive Summary",
-        f"- Low-stock products: {len(low)}",
-        f"- Out-of-stock products: {len(out)}",
-        f"- Forecast: {forecast.get('explanation', forecast.get('message'))}",
+        f"- Low-availability demo items: {len(low)}",
+        f"- Unavailable demo items: {len(out)}",
+        f"- Forecast snapshot: {forecast.get('explanation', forecast.get('message'))}",
         "",
-        "## Low-Stock Products",
-        *[f"- {p['sku']} {p['name']}: {p['stock_quantity']} on hand, reorder level {p['reorder_level']}" for p in low],
+        "## Low-Availability Demo Items",
+        *[f"- {p['sku']} {p['name']}: {p['stock_quantity']} on hand, demo threshold {p['reorder_level']} (sample)" for p in low],
         "",
-        "## Out-of-Stock Products",
-        *[f"- {p['sku']} {p['name']}" for p in out],
+        "## Unavailable Demo Items",
+        *[f"- {p['sku']} {p['name']} (sample)" for p in out],
         "",
-        "## Reorder Recommendations",
-        *[f"- {r['sku']} {r['name']}: order {r['recommended_quantity']} from {r['supplier']}" for r in recs],
+        "## Demo Replenishment Recommendations",
+        *[f"- {r.get('sku')} {r.get('name')}: replenish {r.get('recommended_quantity')} from {r.get('supplier')} (sample)" for r in recs],
         "",
         "## Risks",
-        "- Products below reorder level may stock out before the next supplier delivery.",
+        "- Demo items below their threshold may become unavailable before the next sample partner delivery.",
         "",
         "## Next Actions",
-        "- Review recommended reorder quantities.",
-        "- Confirm supplier lead times before purchase orders.",
+        "- Review recommended replenishment quantities.",
+        "- Confirm sample partner lead times before acting on the demo scenario.",
     ]
     path.write_text("\n".join(lines), encoding="utf-8")
     with get_connection() as connection:
