@@ -7,6 +7,7 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
+import pandas as pd
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
@@ -262,35 +263,42 @@ def write_demo_report(title: str = "AskMamma Operations Report") -> dict[str, An
     out = out_of_stock_products()
     recs = demo_reorder_recommendations()
     forecast = demo_forecast(months=6)
-    file_name = f"askmamma-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.md"
+    file_name = f"askmamma-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.xlsx"
     path = config.REPORT_DIR / file_name
-    lines = [
-        f"# {title}",
-        "",
-        f"Generated: {utc_now()}",
-        "",
-        "## Executive Summary",
-        f"- Low-availability demo items: {len(low)}",
-        f"- Unavailable demo items: {len(out)}",
-        f"- Forecast snapshot: {forecast.get('explanation', forecast.get('message'))}",
-        "",
-        "## Low-Availability Demo Items",
-        *[f"- {p['sku']} {p['name']}: {p['stock_quantity']} on hand, demo threshold {p['reorder_level']} (sample)" for p in low],
-        "",
-        "## Unavailable Demo Items",
-        *[f"- {p['sku']} {p['name']} (sample)" for p in out],
-        "",
-        "## Demo Replenishment Recommendations",
-        *[f"- {r.get('sku')} {r.get('name')}: replenish {r.get('recommended_quantity')} from {r.get('supplier')} (sample)" for r in recs],
-        "",
-        "## Risks",
-        "- Demo items below their threshold may become unavailable before the next sample partner delivery.",
-        "",
-        "## Next Actions",
-        "- Review recommended replenishment quantities.",
-        "- Confirm sample partner lead times before acting on the demo scenario.",
+    summary_rows = [
+        {"Metric": "Report Title", "Value": title},
+        {"Metric": "Generated At", "Value": utc_now()},
+        {"Metric": "Low-Availability Demo Items", "Value": len(low)},
+        {"Metric": "Unavailable Demo Items", "Value": len(out)},
+        {"Metric": "Forecast Snapshot", "Value": forecast.get("explanation", forecast.get("message"))},
+        {"Metric": "Notes", "Value": "Calculated from local inventory/demo data. AI may explain outputs but does not invent stock or forecast numbers."},
     ]
-    path.write_text("\n".join(lines), encoding="utf-8")
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Summary", index=False)
+        pd.DataFrame(low or [{"message": "No low-availability demo items"}]).to_excel(
+            writer,
+            sheet_name="Low Stock",
+            index=False,
+        )
+        pd.DataFrame(out or [{"message": "No out-of-stock demo items"}]).to_excel(
+            writer,
+            sheet_name="Out of Stock",
+            index=False,
+        )
+        pd.DataFrame(recs or [{"message": "No reorder recommendations"}]).to_excel(
+            writer,
+            sheet_name="Reorder Recommendations",
+            index=False,
+        )
+        pd.DataFrame(
+            [
+                {
+                    "method": forecast.get("method"),
+                    "predicted_quantity": forecast.get("predicted_quantity"),
+                    "explanation": forecast.get("explanation", forecast.get("message")),
+                }
+            ]
+        ).to_excel(writer, sheet_name="Forecast", index=False)
     with get_connection() as connection:
         connection.execute(
             """
@@ -299,7 +307,12 @@ def write_demo_report(title: str = "AskMamma Operations Report") -> dict[str, An
             """,
             ("last_report_path", str(path), "last_report_path", utc_now(), utc_now()),
         )
-    return {"path": str(path), "summary": f"Saved report to {path}"}
+    return {
+        "path": str(path),
+        "file_name": path.name,
+        "summary": f"Saved Excel report to {path}",
+        "download_name": path.name,
+    }
 
 
 def audit_log(session_id: str, message: str) -> dict[str, Any]:
@@ -369,7 +382,7 @@ def tool_registry() -> list[ToolCall]:
         ),
         ToolCall(
             name="DemoReportWriterTool",
-            description="Generate a sample AskMamma operations report and save it under outputs/reports.",
+            description="Generate a sample AskMamma operations Excel report and save it under outputs/reports.",
             input_schema=DemoReportInput.model_json_schema(),
             output_schema={"type": "object"},
         ),
@@ -434,7 +447,7 @@ def langchain_tools() -> list[StructuredTool]:
         ),
         StructuredTool.from_function(
             name="DemoReportWriterTool",
-            description="Generate a sample AskMamma operations report and save it under outputs/reports.",
+            description="Generate a sample AskMamma operations Excel report and save it under outputs/reports.",
             func=write_demo_report,
             args_schema=DemoReportInput,
         ),

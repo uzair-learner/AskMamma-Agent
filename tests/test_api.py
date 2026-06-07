@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from api.backend import app
+from core import config
 from scripts.seed_data import seed
 
 
@@ -49,6 +50,13 @@ def test_chat_endpoint_returns_graph_steps():
     assert "DemoAvailabilityTool" in payload["tools_called"]
     assert "SupervisorAgent" in payload["route_path"]
     assert payload["intermediate_steps"]
+    assert payload["provider"]
+    assert payload["model"] is not None
+    assert isinstance(payload["llm_used"], bool)
+    assert isinstance(payload["fallback_used"], bool)
+    assert payload["selected_agent"]
+    assert isinstance(payload["response_time_ms"], int)
+    assert payload["response_time_ms"] >= 0
 
 
 def test_mcp_rpc_list_and_call():
@@ -103,3 +111,49 @@ def test_mcp_metadata_endpoint():
     response = client.get("/mcp/metadata")
     assert response.status_code == 200
     assert response.json()["transport"] == "http+jsonrpc"
+
+
+def test_admin_diagnostics_endpoint():
+    client.post(
+        "/agent/chat",
+        json={"message": "Which sample demo items are low in availability?", "session_id": "diagnostics-test"},
+    )
+    response = client.get("/admin/diagnostics")
+    assert response.status_code == 200
+    payload = response.json()
+    assert "provider" in payload
+    assert "model" in payload
+    assert "ollama_base_url" in payload
+    assert "ollama_reachable" in payload
+    assert "fallback_mode_active" in payload
+    assert isinstance(payload["recent_requests"], list)
+    if payload["recent_requests"]:
+        recent = payload["recent_requests"][0]
+        assert "provider" in recent
+        assert "model" in recent
+        assert "response_time_ms" in recent
+
+
+def test_reports_endpoint_returns_excel_download():
+    response = client.get("/reports/askmamma")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["file_name"].endswith(".xlsx")
+    assert payload["download_url"].endswith(payload["file_name"])
+
+    download = client.get(payload["download_url"])
+    assert download.status_code == 200
+    assert "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in download.headers["content-type"]
+
+    report_path = config.REPORT_DIR / payload["file_name"]
+    assert report_path.exists()
+
+
+def test_reports_list_returns_excel_entries():
+    client.get("/reports/askmamma")
+    response = client.get("/reports")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload
+    assert payload[0]["file_name"].endswith(".xlsx")
+    assert payload[0]["download_url"].endswith(payload[0]["file_name"])

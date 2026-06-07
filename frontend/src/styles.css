@@ -277,6 +277,25 @@ button {
   line-height: 1.6;
 }
 
+.data-source-badge {
+  display: inline-flex;
+  align-items: center;
+  margin: 14px 0 18px;
+  border-radius: 999px;
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  background: rgba(255, 255, 255, 0.06);
+  color: #dceaf3;
+}
+
+.data-source-local {
+  border: 1px solid rgba(101, 206, 255, 0.22);
+}
+
+.data-source-ai {
+  border: 1px solid rgba(118, 146, 255, 0.25);
+}
+
 .error-banner {
   color: #ffd8d1;
   background: rgba(158, 44, 28, 0.25);
@@ -629,6 +648,30 @@ tbody tr:hover,
   white-space: pre-wrap;
 }
 
+.technical-details {
+  margin-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 12px;
+}
+
+.technical-details summary {
+  cursor: pointer;
+  color: #9ccfe5;
+  font-size: 0.9rem;
+}
+
+.technical-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 8px 16px;
+  margin-top: 12px;
+  font-size: 0.9rem;
+}
+
+.technical-grid span {
+  color: #93a8b8;
+}
+
 .composer {
   display: grid;
   gap: 14px;
@@ -683,6 +726,10 @@ tbody tr:hover,
   margin-top: 18px;
 }
 
+.admin-summary-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
 .empty-state {
   padding: 24px;
   color: #8ea2b3;
@@ -704,6 +751,7 @@ tbody tr:hover,
   .dashboard-card-grid,
   .supplier-grid,
   .architecture-grid,
+  .admin-summary-grid,
   .split-panel,
   .hero-card,
   .table-layout {

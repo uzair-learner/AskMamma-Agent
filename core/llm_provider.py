@@ -32,6 +32,26 @@ class EmbeddingProvider(Protocol):
         ...
 
 
+def current_provider_name() -> str:
+    if config.LLM_PROVIDER in {"azure", "azure_openai"}:
+        return "Azure OpenAI"
+    if config.LLM_PROVIDER == "openai":
+        return "OpenAI"
+    return "Ollama"
+
+
+def current_model_name() -> str:
+    if config.LLM_PROVIDER in {"azure", "azure_openai"}:
+        return config.AZURE_OPENAI_DEPLOYMENT or "Not configured"
+    if config.LLM_PROVIDER == "openai":
+        return config.OPENAI_MODEL
+    return config.OLLAMA_MODEL
+
+
+def ollama_reachable() -> bool:
+    return OllamaProvider().available()
+
+
 @dataclass
 class OllamaProvider:
     name: str = "ollama"
@@ -216,3 +236,15 @@ def get_embedding_provider() -> EmbeddingProvider | None:
         return azure_provider
 
     return None
+
+
+def current_runtime_status() -> dict[str, Any]:
+    llm_available = supports_langchain_agents()
+    return {
+        "provider": current_provider_name(),
+        "model": current_model_name(),
+        "llm_used": llm_available,
+        "fallback_used": not llm_available,
+        "ollama_base_url": config.OLLAMA_BASE_URL,
+        "ollama_reachable": ollama_reachable(),
+    }

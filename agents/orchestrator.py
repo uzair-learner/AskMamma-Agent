@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 import uuid
@@ -25,7 +26,7 @@ from askmamma.tools import (
     summarize_tools_for_trace,
     write_demo_report,
 )
-from core.llm_provider import get_chat_model, supports_langchain_agents
+from core.llm_provider import current_runtime_status, get_chat_model, supports_langchain_agents
 from core.observability import configure_langsmith, redact_payload, safe_error_message, tracing_backend_name
 from db.database import get_connection, initialize_database, list_products, rows_to_dicts, utc_now
 from rag.retrieval import document_search as document_search_tool
@@ -40,6 +41,7 @@ Confirm before destructive actions such as deleting demo items or major availabi
 Do not reveal secrets or environment variables.
 Clearly label sample or demo data when answering item, availability, partner, forecast, or report questions.
 """.strip()
+LOGGER = logging.getLogger(__name__)
 
 
 class GraphState(TypedDict, total=False):
@@ -56,6 +58,11 @@ class GraphState(TypedDict, total=False):
     review_notes: list[str]
     errors: list[str]
     trace_backend: str
+    provider: str
+    model: str
+    llm_used: bool
+    fallback_used: bool
+    response_time_ms: int
 
 
 @dataclass
@@ -70,6 +77,11 @@ class AgentResult:
     review_notes: list[str] = field(default_factory=list)
     trace_backend: str = "sqlite"
     task_status: str = "completed"
+    provider: str = "Deterministic fallback"
+    model: str = "None"
+    llm_used: bool = False
+    fallback_used: bool = True
+    response_time_ms: int = 0
 
 
 def save_message(session_id: str, role: str, content: str) -> None:
@@ -136,7 +148,24 @@ def get_recent_traces(limit: int = 50) -> list[dict[str, Any]]:
             """,
             (limit,),
         ).fetchall()
-    return rows_to_dicts(rows)
+    traces = rows_to_dicts(rows)
+    for trace in traces:
+        if isinstance(trace.get("tools_called"), str):
+            try:
+                trace["tools_called"] = json.loads(trace["tools_called"])
+            except json.JSONDecodeError:
+                pass
+        try:
+            metadata = json.loads(trace.get("token_usage") or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        trace["provider"] = metadata.get("provider", "Deterministic fallback")
+        trace["model"] = metadata.get("model", "None")
+        trace["llm_used"] = metadata.get("llm_used", False)
+        trace["fallback_used"] = metadata.get("fallback_used", True)
+        trace["response_time_ms"] = metadata.get("response_time_ms", trace.get("latency_ms", 0))
+        trace["tools_called"] = metadata.get("tools_called", trace.get("tools_called", []))
+    return traces
 
 
 def _history_as_messages(session_id: str) -> list[Any]:
@@ -294,6 +323,10 @@ def _run_langchain_tool_agent(
         tool_inputs=tool_inputs,
         tool_outputs=tool_outputs,
         intermediate_steps=intermediate_steps,
+        provider=current_runtime_status()["provider"],
+        model=current_runtime_status()["model"],
+        llm_used=True,
+        fallback_used=False,
     )
 
 
@@ -433,6 +466,10 @@ def _result_to_state(state: GraphState, result: AgentResult, node_name: str) -> 
         "intermediate_steps": steps,
         "route_path": route_path,
         "trace_backend": tracing_backend_name(),
+        "provider": result.provider,
+        "model": result.model,
+        "llm_used": result.llm_used,
+        "fallback_used": result.fallback_used,
     }
 
 
@@ -448,6 +485,10 @@ def supervisor_node(state: GraphState) -> GraphState:
         "intermediate_steps": _append_step(state, {"agent": "SupervisorAgent", "route": route}),
         "route_path": _append_route(state, "SupervisorAgent"),
         "trace_backend": tracing_backend_name(),
+        "provider": "Deterministic fallback",
+        "model": "None",
+        "llm_used": False,
+        "fallback_used": True,
     }
 
 
@@ -602,15 +643,47 @@ def trace_run(
                 json.dumps(result.tools_called),
                 json.dumps(redact_payload(result.tool_inputs), default=str),
                 summarize_tools_for_trace(
-                    [*result.tool_outputs, {"intermediate_steps": result.intermediate_steps, "route_path": result.route_path}]
+                    [
+                        *result.tool_outputs,
+                        {
+                            "intermediate_steps": result.intermediate_steps,
+                            "route_path": result.route_path,
+                            "provider": result.provider,
+                            "model": result.model,
+                            "llm_used": result.llm_used,
+                            "fallback_used": result.fallback_used,
+                            "response_time_ms": latency_ms,
+                        },
+                    ]
                 ),
                 redact_payload(result.answer),
                 latency_ms,
                 error,
-                json.dumps({"trace_backend": result.trace_backend}),
+                json.dumps(
+                    {
+                        "trace_backend": result.trace_backend,
+                        "provider": result.provider,
+                        "model": result.model,
+                        "llm_used": result.llm_used,
+                        "fallback_used": result.fallback_used,
+                        "response_time_ms": latency_ms,
+                        "selected_agent": result.selected_agent,
+                        "tools_called": result.tools_called,
+                    }
+                ),
                 utc_now(),
             ),
         )
+    LOGGER.info(
+        "agent_response provider=%s model=%s llm_used=%s fallback_used=%s selected_agent=%s tools_called=%s response_time_ms=%s",
+        result.provider,
+        result.model,
+        result.llm_used,
+        result.fallback_used,
+        result.selected_agent,
+        ",".join(result.tools_called),
+        latency_ms,
+    )
 
 
 def _state_to_result(state: GraphState) -> AgentResult:
@@ -624,6 +697,11 @@ def _state_to_result(state: GraphState) -> AgentResult:
         route_path=state.get("route_path", []),
         review_notes=state.get("review_notes", []),
         trace_backend=state.get("trace_backend", tracing_backend_name()),
+        provider=state.get("provider", "Deterministic fallback"),
+        model=state.get("model", "None"),
+        llm_used=state.get("llm_used", False),
+        fallback_used=state.get("fallback_used", True),
+        response_time_ms=state.get("response_time_ms", 0),
     )
 
 
@@ -634,6 +712,7 @@ def invoke_agent(user_input: str, session_id: str | None = None) -> dict[str, An
     start = time.perf_counter()
     save_message(session_id, "user", user_input)
     try:
+        runtime = current_runtime_status()
         final_state = GRAPH.invoke(
             {
                 "user_input": user_input,
@@ -646,6 +725,10 @@ def invoke_agent(user_input: str, session_id: str | None = None) -> dict[str, An
                 "review_notes": [],
                 "errors": [],
                 "trace_backend": tracing_backend_name(),
+                "provider": runtime["provider"] if runtime["llm_used"] else "Deterministic fallback",
+                "model": runtime["model"] if runtime["llm_used"] else "None",
+                "llm_used": runtime["llm_used"],
+                "fallback_used": runtime["fallback_used"],
             }
         )
         result = _state_to_result(final_state)
@@ -655,14 +738,23 @@ def invoke_agent(user_input: str, session_id: str | None = None) -> dict[str, An
             f"Sorry, I could not complete that request: {safe_error_message(exc)}",
             "SupervisorAgent",
             trace_backend=tracing_backend_name(),
+            provider="Deterministic fallback",
+            model="None",
+            llm_used=False,
+            fallback_used=True,
         )
         error = safe_error_message(exc)
     latency_ms = int((time.perf_counter() - start) * 1000)
+    result.response_time_ms = latency_ms
     save_message(session_id, "assistant", result.answer)
     trace_run(session_id, user_input, result, latency_ms, error)
     return {
         "session_id": session_id,
         "answer": result.answer,
+        "provider": result.provider,
+        "model": result.model,
+        "llm_used": result.llm_used,
+        "fallback_used": result.fallback_used,
         "selected_agent": result.selected_agent,
         "tools_called": result.tools_called,
         "tool_inputs": result.tool_inputs,
@@ -671,4 +763,5 @@ def invoke_agent(user_input: str, session_id: str | None = None) -> dict[str, An
         "review_notes": result.review_notes,
         "trace_backend": result.trace_backend,
         "latency_ms": latency_ms,
+        "response_time_ms": latency_ms,
     }

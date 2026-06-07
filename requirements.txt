@@ -8,6 +8,7 @@ langsmith
 python-dotenv
 faiss-cpu
 pandas
+openpyxl
 requests
 streamlit
 pypdf

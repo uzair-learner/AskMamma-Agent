@@ -30,87 +30,18 @@ const navigationItems = [
 ];
 
 const dashboardCardConfig = [
-  {
-    title: "All Products",
-    route: "products",
-    accent: "blue",
-    description: "Browse the full sample catalog, search items, and inspect product details.",
-    action: "View all products",
-  },
-  {
-    title: "Low Stock",
-    route: "products",
-    params: { filter: "low-stock" },
-    accent: "amber",
-    description: "Items below their current threshold and likely to need attention soon.",
-    action: "View low-stock items",
-  },
-  {
-    title: "Out of Stock",
-    route: "products",
-    params: { filter: "out-of-stock" },
-    accent: "coral",
-    description: "Products currently unavailable in the sample catalog.",
-    action: "View unavailable items",
-  },
-  {
-    title: "High Demand Products",
-    route: "products",
-    params: { filter: "high-demand" },
-    accent: "mint",
-    description: "Products with strong recent sales or usage signals.",
-    action: "View high-demand items",
-  },
-  {
-    title: "Forecast Alerts",
-    route: "forecasts",
-    accent: "violet",
-    description: "Products where historical usage suggests near-term demand pressure.",
-    action: "View forecast alerts",
-  },
-  {
-    title: "Reorder Recommendations",
-    route: "reorder",
-    accent: "sunset",
-    description: "Suggested purchasing actions based on current stock and deterministic forecasts.",
-    action: "View reorder plan",
-  },
-  {
-    title: "Suppliers",
-    route: "suppliers",
-    accent: "teal",
-    description: "See supplier coverage, low-stock exposure, and demo partner details.",
-    action: "View suppliers",
-  },
-  {
-    title: "Reports",
-    route: "reports",
-    accent: "slate",
-    description: "Generate and review AskMamma operations reports and report history.",
-    action: "View reports",
-  },
-  {
-    title: "Ask AskMamma",
-    route: "ask",
-    accent: "indigo",
-    description: "Open the AI operations assistant for inventory, forecast, or document questions.",
-    action: "Open AI chat",
-  },
-  {
-    title: "AI Architecture",
-    route: "architecture",
-    accent: "rose",
-    description: "Understand how the supervisor and specialist agents handle business requests.",
-    action: "Explore agent flow",
-  },
-  {
-    title: "Admin / Traces",
-    route: "admin",
-    accent: "graphite",
-    description: "Review technical traces, recent task activity, and internal operational detail.",
-    action: "Open admin traces",
-  },
-];
+  ["All Products", "products", {}, "blue", "Browse the full sample catalog, search items, and inspect product details.", "View all products"],
+  ["Low Stock", "products", { filter: "low-stock" }, "amber", "Items below their current threshold and likely to need attention soon.", "View low-stock items"],
+  ["Out of Stock", "products", { filter: "out-of-stock" }, "coral", "Products currently unavailable in the sample catalog.", "View unavailable items"],
+  ["High Demand Products", "products", { filter: "high-demand" }, "mint", "Products with strong recent sales or usage signals.", "View high-demand items"],
+  ["Forecast Alerts", "forecasts", {}, "violet", "Products where historical usage suggests near-term demand pressure.", "View forecast alerts"],
+  ["Reorder Recommendations", "reorder", {}, "sunset", "Suggested purchasing actions based on current stock and deterministic forecasts.", "View reorder plan"],
+  ["Suppliers", "suppliers", {}, "teal", "See supplier coverage, low-stock exposure, and demo partner details.", "View suppliers"],
+  ["Reports", "reports", {}, "slate", "Generate and download AskMamma operations reports.", "View reports"],
+  ["Ask AskMamma", "ask", {}, "indigo", "Open the AI operations assistant for inventory, forecast, or document questions.", "Open AI chat"],
+  ["AI Architecture", "architecture", {}, "rose", "Understand how the supervisor and specialist agents handle business requests.", "Explore agent flow"],
+  ["Admin / Traces", "admin", {}, "graphite", "Review diagnostics, request metadata, and internal operational detail.", "Open admin traces"],
+].map(([title, route, params, accent, description, action]) => ({ title, route, params, accent, description, action }));
 
 function getSessionId() {
   const existing = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
@@ -128,8 +59,7 @@ function parseHash() {
     return { route: "dashboard", params: {} };
   }
   const [routePart, queryString = ""] = raw.split("?");
-  const params = Object.fromEntries(new URLSearchParams(queryString).entries());
-  return { route: routePart || "dashboard", params };
+  return { route: routePart || "dashboard", params: Object.fromEntries(new URLSearchParams(queryString).entries()) };
 }
 
 function navigateTo(route, params = {}) {
@@ -152,7 +82,7 @@ async function request(path, options = {}) {
       const payload = await response.json();
       message = payload.detail ?? payload.message ?? message;
     } catch {
-      // Keep the fallback message when the payload is not JSON.
+      // Keep fallback message when the payload is not JSON.
     }
     throw new Error(message);
   }
@@ -169,7 +99,7 @@ export default function App() {
   const [suppliers, setSuppliers] = useState([]);
   const [recommendations, setRecommendations] = useState([]);
   const [reports, setReports] = useState([]);
-  const [traces, setTraces] = useState([]);
+  const [diagnostics, setDiagnostics] = useState(null);
   const [selectedProductId, setSelectedProductId] = useState(null);
   const [productQuery, setProductQuery] = useState("");
   const [chatInput, setChatInput] = useState("");
@@ -184,10 +114,15 @@ export default function App() {
       id: "welcome",
       role: "assistant",
       content:
-        "Welcome to AskMamma Assistant. Ask about sample inventory, availability, forecasts, reports, or documents and I'll route it through the agent system.",
+        "Welcome to AskMamma Assistant. Ask about sample inventory, availability, forecasts, reports, or documents and I will route it through the agent system.",
       meta: {
+        provider: "Deterministic fallback",
+        model: "None",
+        llm_used: false,
+        fallback_used: true,
         selected_agent: "SupervisorAgent",
         tools_called: [],
+        response_time_ms: 0,
       },
     },
   ]);
@@ -202,7 +137,7 @@ export default function App() {
   }, []);
 
   async function loadAllData() {
-    const [healthData, dashboardData, productData, supplierData, recommendationData, reportData, traceData] =
+    const [healthData, dashboardData, productData, supplierData, recommendationData, reportData, diagnosticsData] =
       await Promise.all([
         request("/health"),
         request("/dashboard"),
@@ -210,7 +145,7 @@ export default function App() {
         request("/demo/suppliers"),
         request("/demo/recommendations/reorder"),
         request("/reports"),
-        request("/agent/traces?limit=20"),
+        request("/admin/diagnostics"),
       ]);
 
     startTransition(() => {
@@ -220,15 +155,13 @@ export default function App() {
       setSuppliers(supplierData);
       setRecommendations(recommendationData);
       setReports(reportData);
-      setTraces(traceData);
+      setDiagnostics(diagnosticsData);
       setSelectedProductId((current) => current ?? productData[0]?.id ?? null);
     });
   }
 
   useEffect(() => {
-    loadAllData().catch((loadError) => {
-      setError(loadError.message);
-    });
+    loadAllData().catch((loadError) => setError(loadError.message));
   }, []);
 
   const highDemandProducts = useMemo(() => {
@@ -251,15 +184,14 @@ export default function App() {
       reorder: recommendations.length,
       suppliers: suppliers.length,
       reports: reports.length,
-      ask: messages.length - 1,
+      ask: Math.max(0, messages.length - 1),
       architecture: 5,
-      admin: traces.length,
+      admin: diagnostics?.recent_requests?.length ?? 0,
     }),
-    [forecastAlerts.length, highDemandProducts.length, messages.length, products, recommendations.length, reports.length, suppliers.length, traces.length],
+    [diagnostics?.recent_requests?.length, forecastAlerts.length, highDemandProducts.length, messages.length, products, recommendations.length, reports.length, suppliers.length],
   );
 
   const activeProductFilter = routeState.params.filter ?? "all";
-
   const visibleProducts = useMemo(() => {
     const searchValue = productQuery.trim().toLowerCase();
     let filtered = products;
@@ -271,11 +203,9 @@ export default function App() {
       const signalNames = new Set(highDemandProducts.map((item) => item.name));
       filtered = products.filter((item) => signalNames.has(item.name));
     }
-
     if (!searchValue) {
       return filtered;
     }
-
     return filtered.filter((item) =>
       [item.name, item.sku, item.category, item.supplier_name, item.location]
         .filter(Boolean)
@@ -314,6 +244,9 @@ export default function App() {
       const report = await request("/reports/askmamma");
       setReportSummary(report.summary);
       await loadAllData();
+      if (report.download_url) {
+        window.open(`${API_BASE}${report.download_url}`, "_blank", "noopener,noreferrer");
+      }
       navigateTo("reports");
     } catch (reportError) {
       setError(reportError.message);
@@ -341,13 +274,7 @@ export default function App() {
     if (!message.trim()) {
       return;
     }
-
-    const userMessage = {
-      id: `user-${Date.now()}`,
-      role: "user",
-      content: message,
-    };
-    setMessages((current) => [...current, userMessage]);
+    setMessages((current) => [...current, { id: `user-${Date.now()}`, role: "user", content: message }]);
     setChatInput("");
     setIsSending(true);
     setError("");
@@ -355,12 +282,8 @@ export default function App() {
     try {
       const result = await request("/agent/chat", {
         method: "POST",
-        body: JSON.stringify({
-          message,
-          session_id: sessionId,
-        }),
+        body: JSON.stringify({ message, session_id: sessionId }),
       });
-
       setMessages((current) => [
         ...current,
         {
@@ -368,9 +291,13 @@ export default function App() {
           role: "assistant",
           content: result.answer,
           meta: {
+            provider: result.provider,
+            model: result.model,
+            llm_used: result.llm_used,
+            fallback_used: result.fallback_used,
             selected_agent: result.selected_agent,
             tools_called: result.tools_called ?? [],
-            latency_ms: result.latency_ms,
+            response_time_ms: result.response_time_ms ?? result.latency_ms ?? 0,
           },
         },
       ]);
@@ -384,8 +311,13 @@ export default function App() {
           role: "assistant",
           content: `I hit an error while contacting the agent: ${chatError.message}`,
           meta: {
+            provider: "Deterministic fallback",
+            model: "None",
+            llm_used: false,
+            fallback_used: true,
             selected_agent: "SupervisorAgent",
             tools_called: [],
+            response_time_ms: 0,
           },
         },
       ]);
@@ -423,7 +355,6 @@ export default function App() {
           <h1>Operations Studio</h1>
           <p>Move by business category instead of hunting through a big table first.</p>
         </div>
-
         <nav className="sidebar-nav">
           {navigationItems.map((item) => {
             const isActive =
@@ -440,7 +371,6 @@ export default function App() {
             );
           })}
         </nav>
-
         <div className="sidebar-footer">
           <span className={`status-pill ${health.status === "ok" ? "status-ok" : "status-waiting"}`}>
             <span className="status-dot" />
@@ -469,19 +399,12 @@ export default function App() {
         </header>
 
         {error ? <div className="error-banner">{error}</div> : null}
-        {reportSummary ? <div className="info-banner">Report: {reportSummary}</div> : null}
-        {forecastSummary ? <div className="info-banner">Forecast: {forecastSummary}</div> : null}
+        {reportSummary ? <div className="info-banner">{reportSummary}</div> : null}
+        {forecastSummary ? <div className="info-banner">{forecastSummary}</div> : null}
 
         {routeState.route === "dashboard" ? (
-          <DashboardPage
-            cards={dashboardCards}
-            dashboard={dashboard}
-            forecastAlerts={forecastAlerts}
-            highDemandProducts={highDemandProducts}
-            navigateTo={navigateTo}
-          />
+          <DashboardPage cards={dashboardCards} dashboard={dashboard} forecastAlerts={forecastAlerts} highDemandProducts={highDemandProducts} />
         ) : null}
-
         {routeState.route === "products" ? (
           <ProductsPage
             filter={activeProductFilter}
@@ -493,18 +416,10 @@ export default function App() {
             setSelectedProductId={setSelectedProductId}
           />
         ) : null}
-
-        {routeState.route === "forecasts" ? (
-          <ForecastsPage forecastAlerts={forecastAlerts} onOpenReorder={() => navigateTo("reorder")} />
-        ) : null}
-
+        {routeState.route === "forecasts" ? <ForecastsPage forecastAlerts={forecastAlerts} onOpenReorder={() => navigateTo("reorder")} /> : null}
         {routeState.route === "reorder" ? <ReorderPage recommendations={recommendations} /> : null}
         {routeState.route === "suppliers" ? <SuppliersPage suppliers={suppliers} /> : null}
-
-        {routeState.route === "reports" ? (
-          <ReportsPage reports={reports} onGenerateReport={handleGenerateReport} isGeneratingReport={isGeneratingReport} />
-        ) : null}
-
+        {routeState.route === "reports" ? <ReportsPage reports={reports} onGenerateReport={handleGenerateReport} isGeneratingReport={isGeneratingReport} /> : null}
         {routeState.route === "ask" ? (
           <AskPage
             sessionId={sessionId}
@@ -515,15 +430,18 @@ export default function App() {
             isSending={isSending}
           />
         ) : null}
-
         {routeState.route === "architecture" ? <ArchitecturePage onAsk={() => navigateTo("ask")} /> : null}
-        {routeState.route === "admin" ? <AdminPage traces={traces} /> : null}
+        {routeState.route === "admin" ? <AdminPage diagnostics={diagnostics} /> : null}
       </main>
     </div>
   );
 }
 
-function DashboardPage({ cards, dashboard, forecastAlerts, highDemandProducts, navigateTo }) {
+function DataSourceBadge({ text, tone = "local" }) {
+  return <div className={`data-source-badge data-source-${tone}`}>{text}</div>;
+}
+
+function DashboardPage({ cards, dashboard, forecastAlerts, highDemandProducts }) {
   return (
     <div className="page-grid">
       <section className="hero-card">
@@ -531,11 +449,11 @@ function DashboardPage({ cards, dashboard, forecastAlerts, highDemandProducts, n
           <span className="eyebrow">Business dashboard</span>
           <h3>Click a business category and jump straight to the right data.</h3>
           <p>
-            AskMamma is organized around operational decisions, not raw tables. Choose inventory, forecasts,
-            suppliers, reports, AI chat, or architecture and go directly to the filtered view you need.
+            AskMamma is organized around operational decisions, not raw tables. Choose inventory, forecasts, suppliers,
+            reports, AI chat, or architecture and go directly to the filtered view you need.
           </p>
+          <DataSourceBadge text="Calculated from local inventory/demo data" />
         </div>
-
         <div className="mini-signal-panel">
           <div className="panel-stat">
             <span>Forecast alerts</span>
@@ -559,7 +477,6 @@ function DashboardPage({ cards, dashboard, forecastAlerts, highDemandProducts, n
             <h3>Business categories</h3>
           </div>
         </div>
-
         <div className="dashboard-card-grid">
           {cards.map((card) => (
             <article key={card.title} className={`dashboard-card dashboard-card-${card.accent}`}>
@@ -586,7 +503,6 @@ function DashboardPage({ cards, dashboard, forecastAlerts, highDemandProducts, n
             <li>The agent uses tools, data, and reports to return the answer.</li>
           </ol>
         </div>
-
         <div className="watch-card">
           <span>Current business signals</span>
           <div className="watch-row">
@@ -614,7 +530,6 @@ function ProductsPage({ filter, onFilterChange, productQuery, setProductQuery, p
     { key: "out-of-stock", label: "Out of Stock" },
     { key: "high-demand", label: "High Demand" },
   ];
-
   return (
     <div className="page-grid">
       <section className="panel">
@@ -624,27 +539,17 @@ function ProductsPage({ filter, onFilterChange, productQuery, setProductQuery, p
             <h3>{filterPills.find((item) => item.key === filter)?.label ?? "Products"}</h3>
           </div>
           <div className="toolbar-actions">
-            <input
-              className="search-input"
-              value={productQuery}
-              onChange={(event) => setProductQuery(event.target.value)}
-              placeholder="Search SKU, product, category, supplier..."
-            />
+            <input className="search-input" value={productQuery} onChange={(event) => setProductQuery(event.target.value)} placeholder="Search SKU, product, category, supplier..." />
           </div>
         </div>
-
+        <DataSourceBadge text="Calculated from local inventory/demo data" />
         <div className="pill-row">
           {filterPills.map((pill) => (
-            <button
-              key={pill.key}
-              className={`filter-pill ${filter === pill.key ? "filter-pill-active" : ""}`}
-              onClick={() => onFilterChange(pill.key)}
-            >
+            <button key={pill.key} className={`filter-pill ${filter === pill.key ? "filter-pill-active" : ""}`} onClick={() => onFilterChange(pill.key)}>
               {pill.label}
             </button>
           ))}
         </div>
-
         <div className="table-layout">
           <div className="table-card">
             <div className="table-toolbar">
@@ -665,11 +570,7 @@ function ProductsPage({ filter, onFilterChange, productQuery, setProductQuery, p
                 </thead>
                 <tbody>
                   {products.map((product) => (
-                    <tr
-                      key={product.id}
-                      className={selectedProduct?.id === product.id ? "selected-row" : ""}
-                      onClick={() => setSelectedProductId(product.id)}
-                    >
+                    <tr key={product.id} className={selectedProduct?.id === product.id ? "selected-row" : ""} onClick={() => setSelectedProductId(product.id)}>
                       <td>
                         <div className="product-cell">
                           <strong>{product.name}</strong>
@@ -688,7 +589,6 @@ function ProductsPage({ filter, onFilterChange, productQuery, setProductQuery, p
               {!products.length ? <div className="empty-state">No products matched this filter.</div> : null}
             </div>
           </div>
-
           <aside className="detail-card">
             <div className="section-label">Selected item</div>
             {selectedProduct ? (
@@ -729,21 +629,17 @@ function ForecastsPage({ forecastAlerts, onOpenReorder }) {
             Open reorder recommendations
           </button>
         </div>
-
+        <DataSourceBadge text="Calculated from local inventory/demo data" />
         <div className="info-banner">
-          Forecasts are calculated using historical demo sales/movement data and forecasting logic. AI may explain the
-          result, but it does not invent stock or forecast numbers.
+          Forecasts are calculated using historical demo sales or movement data and forecasting logic. AI may explain the result, but it does not invent stock or forecast numbers.
         </div>
-
         <div className="list-stack">
           {forecastAlerts.map((item) => (
             <article key={item.item_id} className="list-card">
               <div className="list-card-top">
                 <div>
                   <strong>{item.name}</strong>
-                  <span>
-                    {item.sku} · {item.supplier}
-                  </span>
+                  <span>{item.sku} | {item.supplier}</span>
                 </div>
                 <strong>{formatter.format(item.recommended_quantity)} units</strong>
               </div>
@@ -771,16 +667,14 @@ function ReorderPage({ recommendations }) {
             <h3>Reorder recommendations</h3>
           </div>
         </div>
-
+        <DataSourceBadge text="Calculated from local inventory/demo data" />
         <div className="list-stack">
           {recommendations.map((item) => (
             <article key={item.item_id} className="list-card">
               <div className="list-card-top">
                 <div>
                   <strong>{item.name}</strong>
-                  <span>
-                    {item.sku} · {item.supplier}
-                  </span>
+                  <span>{item.sku} | {item.supplier}</span>
                 </div>
                 <strong>{formatter.format(item.recommended_quantity)} recommended</strong>
               </div>
@@ -807,7 +701,7 @@ function SuppliersPage({ suppliers }) {
             <h3>Supplier overview</h3>
           </div>
         </div>
-
+        <DataSourceBadge text="Calculated from local inventory/demo data" />
         <div className="supplier-grid">
           {suppliers.map((supplier) => (
             <article key={supplier.id} className="supplier-card">
@@ -848,7 +742,7 @@ function ReportsPage({ reports, onGenerateReport, isGeneratingReport }) {
             {isGeneratingReport ? "Generating..." : "Generate new report"}
           </button>
         </div>
-
+        <DataSourceBadge text="Calculated from local inventory/demo data" />
         <div className="list-stack">
           {reports.map((report) => (
             <article key={report.path} className="list-card">
@@ -860,6 +754,12 @@ function ReportsPage({ reports, onGenerateReport, isGeneratingReport }) {
                 <strong>{formatter.format(report.size_bytes)} bytes</strong>
               </div>
               <p>{report.path}</p>
+              <div className="meta-row">
+                <span>Excel report saved in the project folder</span>
+                <a className="inline-link" href={`${API_BASE}${report.download_url}`} download>
+                  Download report
+                </a>
+              </div>
             </article>
           ))}
           {!reports.length ? <div className="empty-state">No reports have been generated yet.</div> : null}
@@ -880,7 +780,7 @@ function AskPage({ sessionId, messages, chatInput, setChatInput, submitChatMessa
           </div>
           <span className="session-pill">Session {sessionId.slice(0, 8)}</span>
         </div>
-
+        <DataSourceBadge text="Generated using AI explanation" tone="ai" />
         <div className="prompt-row">
           {cannedPrompts.map((prompt) => (
             <button key={prompt} className="prompt-chip" onClick={() => submitChatMessage(prompt)} disabled={isSending}>
@@ -888,23 +788,28 @@ function AskPage({ sessionId, messages, chatInput, setChatInput, submitChatMessa
             </button>
           ))}
         </div>
-
         <div className="chat-stream">
           {messages.map((message) => (
             <article key={message.id} className={`message-bubble message-${message.role}`}>
               <div className="message-role">{message.role === "assistant" ? "AskMamma AI" : "You"}</div>
               <p>{message.content}</p>
               {message.meta ? (
-                <div className="message-meta">
-                  <span>{message.meta.selected_agent}</span>
-                  {message.meta.tools_called?.length ? <span>Tools: {message.meta.tools_called.join(", ")}</span> : null}
-                  {message.meta.latency_ms ? <span>{message.meta.latency_ms} ms</span> : null}
-                </div>
+                <details className="technical-details">
+                  <summary>Technical Details</summary>
+                  <div className="technical-grid">
+                    <span>Provider</span><strong>{message.meta.provider}</strong>
+                    <span>Model</span><strong>{message.meta.model}</strong>
+                    <span>LLM Used</span><strong>{message.meta.llm_used ? "Yes" : "No"}</strong>
+                    <span>Fallback Used</span><strong>{message.meta.fallback_used ? "Yes" : "No"}</strong>
+                    <span>Agent</span><strong>{message.meta.selected_agent}</strong>
+                    <span>Tools</span><strong>{message.meta.tools_called?.length ? message.meta.tools_called.join(", ") : "None"}</strong>
+                    <span>Response Time</span><strong>{formatter.format(message.meta.response_time_ms ?? 0)} ms</strong>
+                  </div>
+                </details>
               ) : null}
             </article>
           ))}
         </div>
-
         <form
           className="composer"
           onSubmit={(event) => {
@@ -929,30 +834,12 @@ function AskPage({ sessionId, messages, chatInput, setChatInput, submitChatMessa
 
 function ArchitecturePage({ onAsk }) {
   const agentCards = [
-    {
-      title: "Supervisor Agent",
-      description: "Decides what the user is asking and routes the request to the correct specialist.",
-    },
-    {
-      title: "Inventory Agent",
-      description: "Handles product lookup, stock levels, supplier details, availability, and reorder questions.",
-    },
-    {
-      title: "Forecast Agent",
-      description: "Uses historical sales or movement data and forecasting tools to calculate future demand and reorder recommendations.",
-    },
-    {
-      title: "Document Agent",
-      description: "Uses RAG and document search to answer questions from uploaded or internal documents.",
-    },
-    {
-      title: "Report Agent",
-      description: "Generates inventory, forecast, and operations reports.",
-    },
-    {
-      title: "Quality Review Agent",
-      description: "Checks the answer before it is returned to the user.",
-    },
+    ["Supervisor Agent", "Decides what the user is asking and routes the request to the correct specialist."],
+    ["Inventory Agent", "Handles product lookup, stock levels, supplier details, availability, and reorder questions."],
+    ["Forecast Agent", "Uses historical sales or movement data and forecasting tools to calculate future demand and reorder recommendations."],
+    ["Document Agent", "Uses RAG and document search to answer questions from uploaded or internal documents."],
+    ["Report Agent", "Generates inventory, forecast, and operations reports."],
+    ["Quality Review Agent", "Checks the answer before it is returned to the user."],
   ];
 
   return (
@@ -967,33 +854,30 @@ function ArchitecturePage({ onAsk }) {
             Ask AskMamma now
           </button>
         </div>
-
         <div className="architecture-diagram">
           <div className="diagram-node">User request</div>
-          <div className="diagram-arrow">↓</div>
+          <div className="diagram-arrow">v</div>
           <div className="diagram-node diagram-highlight">Supervisor Agent</div>
-          <div className="diagram-arrow">↓</div>
+          <div className="diagram-arrow">v</div>
           <div className="diagram-grid">
             <div className="diagram-node">Inventory Agent</div>
             <div className="diagram-node">Forecast Agent</div>
             <div className="diagram-node">Document Agent</div>
             <div className="diagram-node">Report Agent</div>
           </div>
-          <div className="diagram-arrow">↓</div>
+          <div className="diagram-arrow">v</div>
           <div className="diagram-node">Quality Review Agent</div>
-          <div className="diagram-arrow">↓</div>
+          <div className="diagram-arrow">v</div>
           <div className="diagram-node diagram-final">Final Response</div>
         </div>
-
         <div className="supplier-grid architecture-grid">
-          {agentCards.map((agent) => (
-            <article key={agent.title} className="supplier-card">
-              <strong>{agent.title}</strong>
-              <p>{agent.description}</p>
+          {agentCards.map(([title, description]) => (
+            <article key={title} className="supplier-card">
+              <strong>{title}</strong>
+              <p>{description}</p>
             </article>
           ))}
         </div>
-
         <div className="watch-card architecture-note">
           <span>Forecasting flow</span>
           <p>Forecasting numbers must not be invented by the LLM.</p>
@@ -1004,12 +888,8 @@ function ArchitecturePage({ onAsk }) {
             <li>Forecast Calculation Tool</li>
             <li>Optional LLM Explanation</li>
           </ol>
-          <p>
-            The LLM may explain the forecast in plain English, but the actual numbers come from deterministic calculation
-            and stored historical/demo data.
-          </p>
+          <p>The LLM may explain the forecast in plain English, but the actual numbers come from deterministic calculation and stored historical or demo data.</p>
         </div>
-
         <div className="watch-card architecture-note">
           <span>Example flow</span>
           <ol className="step-list">
@@ -1026,35 +906,66 @@ function ArchitecturePage({ onAsk }) {
   );
 }
 
-function AdminPage({ traces }) {
+function AdminPage({ diagnostics }) {
+  const recentRequests = diagnostics?.recent_requests ?? [];
   return (
     <div className="page-grid">
       <section className="panel">
         <div className="panel-header">
           <div>
             <p className="section-label">Admin</p>
-            <h3>Traces and technical activity</h3>
+            <h3>Diagnostics</h3>
           </div>
         </div>
+        <div className="supplier-grid admin-summary-grid">
+          <article className="supplier-card">
+            <strong>Current LLM Provider</strong>
+            <p>{diagnostics?.provider ?? "Unknown"}</p>
+          </article>
+          <article className="supplier-card">
+            <strong>Current Model</strong>
+            <p>{diagnostics?.model ?? "Unknown"}</p>
+          </article>
+          <article className="supplier-card">
+            <strong>Ollama Base URL</strong>
+            <p>{diagnostics?.ollama_base_url ?? "Unknown"}</p>
+          </article>
+          <article className="supplier-card">
+            <strong>Ollama Reachable</strong>
+            <p>{diagnostics?.ollama_reachable ? "Yes" : "No"}</p>
+          </article>
+          <article className="supplier-card">
+            <strong>Fallback Mode Active</strong>
+            <p>{diagnostics?.fallback_mode_active ? "Yes" : "No"}</p>
+          </article>
+        </div>
+      </section>
 
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <p className="section-label">Recent requests</p>
+            <h3>Last 20 requests</h3>
+          </div>
+        </div>
         <div className="list-stack">
-          {traces.map((trace, index) => (
+          {recentRequests.map((trace, index) => (
             <article key={`${trace.session_id}-${index}`} className="list-card">
               <div className="list-card-top">
                 <div>
                   <strong>{trace.selected_agent || "Agent"}</strong>
                   <span>{new Date(trace.created_at).toLocaleString()}</span>
                 </div>
-                <strong>{trace.latency_ms ? `${trace.latency_ms} ms` : "Trace"}</strong>
+                <strong>{formatter.format(trace.response_time_ms ?? 0)} ms</strong>
               </div>
               <p>{trace.user_input}</p>
               <div className="meta-row">
-                <span>Session {trace.session_id.slice(0, 8)}</span>
-                <span>{trace.final_answer ? "Answer captured" : "No final answer stored"}</span>
+                <span>Provider: {trace.provider}</span>
+                <span>Model: {trace.model}</span>
               </div>
             </article>
           ))}
-          {!traces.length ? <div className="empty-state">No traces recorded yet.</div> : null}
+          {!recentRequests.length ? <div className="empty-state">No requests recorded yet.</div> : null}
         </div>
       </section>
     </div>
@@ -1071,7 +982,7 @@ function Detail({ label, value }) {
 }
 
 function pageTitle(routeState) {
-  const map = {
+  return {
     dashboard: "Dashboard",
     products: routeState.params.filter === "high-demand" ? "High Demand Products" : "Products",
     forecasts: "Forecast Alerts",
@@ -1080,7 +991,6 @@ function pageTitle(routeState) {
     reports: "Reports",
     ask: "Ask AskMamma",
     architecture: "AI Architecture",
-    admin: "Admin / Traces",
-  };
-  return map[routeState.route] ?? "AskMamma";
+    admin: "Admin / Diagnostics",
+  }[routeState.route] ?? "AskMamma";
 }

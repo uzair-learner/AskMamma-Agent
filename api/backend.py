@@ -23,6 +23,7 @@ from askmamma.tools import (
     write_demo_report,
 )
 from core import config
+from core.llm_provider import current_runtime_status
 from core.observability import configure_langsmith, safe_error_message
 from db.database import (
     create_product,
@@ -262,6 +263,19 @@ def agent_traces(limit: int = 50) -> list[dict[str, Any]]:
     return get_recent_traces(limit)
 
 
+@app.get("/admin/diagnostics")
+def admin_diagnostics() -> dict[str, Any]:
+    runtime = current_runtime_status()
+    return {
+        "provider": runtime["provider"],
+        "model": runtime["model"],
+        "ollama_base_url": runtime["ollama_base_url"],
+        "ollama_reachable": runtime["ollama_reachable"],
+        "fallback_mode_active": runtime["fallback_used"],
+        "recent_requests": get_recent_traces(20),
+    }
+
+
 @app.get("/agent/tools")
 def agent_tools() -> list[dict[str, Any]]:
     return [tool.model_dump() for tool in tool_registry()]
@@ -355,12 +369,14 @@ def documents_search(payload: DocumentSearchPayload) -> dict[str, Any]:
 
 @app.get("/reports/demo", summary="Generate a sample demo report")
 def reports_demo() -> dict[str, Any]:
-    return write_demo_report()
+    report = write_demo_report()
+    return {**report, "download_url": f"/reports/download/{report['file_name']}"}
 
 
 @app.get("/reports/askmamma")
 def reports_askmamma() -> dict[str, Any]:
-    return write_demo_report("AskMamma Operations Report")
+    report = write_demo_report("AskMamma Operations Report")
+    return {**report, "download_url": f"/reports/download/{report['file_name']}"}
 
 
 @app.get("/reports/demo-forecast", summary="Generate a sample demo forecast snapshot")
@@ -372,7 +388,7 @@ def reports_demo_forecast() -> dict[str, Any]:
 def reports_list() -> list[dict[str, Any]]:
     config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
     reports = []
-    for path in sorted(config.REPORT_DIR.glob("*.md"), key=lambda item: item.stat().st_mtime, reverse=True):
+    for path in sorted(config.REPORT_DIR.glob("*.xlsx"), key=lambda item: item.stat().st_mtime, reverse=True):
         stats = path.stat()
         reports.append(
             {
@@ -380,9 +396,19 @@ def reports_list() -> list[dict[str, Any]]:
                 "path": str(path),
                 "updated_at": datetime.fromtimestamp(stats.st_mtime, timezone.utc).isoformat(),
                 "size_bytes": stats.st_size,
+                "download_url": f"/reports/download/{path.name}",
             }
         )
     return reports
+
+
+@app.get("/reports/download/{file_name}")
+def reports_download(file_name: str) -> FileResponse:
+    safe_name = Path(file_name).name
+    path = config.REPORT_DIR / safe_name
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Report not found")
+    return FileResponse(path, filename=safe_name)
 
 
 @app.get("/.well-known/agent-card.json")
