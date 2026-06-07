@@ -20,7 +20,7 @@ def test_mcp_tools_endpoint():
 
 def test_agent_card_has_a2a_style_fields():
     payload = client.get("/.well-known/agent-card.json").json()
-    assert {"name", "description", "version", "endpoint", "capabilities", "authentication", "skills"}.issubset(payload)
+    assert {"name", "description", "version", "endpoint", "capabilities", "authentication", "skills", "agents"}.issubset(payload)
     assert "jsonrpc" in payload["supported_input_modes"]
     assert payload["examples"]
 

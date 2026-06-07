@@ -17,8 +17,9 @@ def test_greeting_uses_supervisor_only():
 
 def test_demo_low_availability_routes_to_action_tool():
     result = invoke_agent("Which sample demo items are low in availability?", session_id="test-low-stock")
-    assert result["selected_agent"] == "AskMammaActionAgent"
+    assert result["selected_agent"] == "InventoryAgent"
     assert "DemoAvailabilityTool" in result["tools_called"]
+    assert "ReportingAgent" in result["route_path"]
     assert "QualityReviewAgent" in result["route_path"]
 
 
@@ -46,6 +47,7 @@ def test_forecast_route_has_intermediate_steps():
     )
     assert result["selected_agent"] == "ForecastAgent"
     assert "DemoForecastTool" in result["tools_called"]
+    assert "ReportingAgent" in result["route_path"]
     assert result["intermediate_steps"]
 
 

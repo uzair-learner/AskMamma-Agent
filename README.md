@@ -1,320 +1,180 @@
-# AskMamma Agent System
+# AskMamma-Agent
 
-AskMamma-Agent is a local AI agent demo that combines:
-- FastAPI backend
-- Streamlit UI
-- React presentation UI
-- LangGraph multi-agent orchestration
-- LangChain tool calling
-- embedding-backed RAG over local documents
-- SQLite memory and trace storage
-- optional LangSmith tracing
-- automated tests and evaluation
+AskMamma-Agent is a clean, interview-ready learning project for AI agents. It is designed for a .NET developer who wants to understand how modern agent systems are structured without getting buried in unnecessary framework complexity.
 
-The seeded catalog, availability, partner, movement, forecast, and report flows are sample demo data. They exist to demonstrate agent patterns and are not the core identity of the project.
+The project demonstrates:
+
+- LangGraph workflow orchestration
+- LangChain tool calling and prompt abstractions
+- RAG with `RecursiveCharacterTextSplitter`, FAISS, OpenAI embeddings, and local fallback embeddings
+- conversation, semantic, and audit memory
+- MCP-style tool/resource/prompt discovery with JSON-RPC
+- A2A-style task execution with an agent card
+- Streamlit observability UI
+- optional TensorFlow and PyTorch learning examples for demand prediction
 
 ## Architecture
 
-In simple terms:
-
 ```text
-React UI / Streamlit UI
+UI
   -> FastAPI API
-    -> LangGraph supervisor
-      -> Inventory Agent
-      -> ForecastAgent
-      -> DocumentAgent
-      -> ReportAgent
+    -> LangGraph workflow
+      -> SupervisorAgent
+      -> InventoryAgent / ForecastAgent / DocumentAgent / ResearchAgent
+      -> ReportingAgent
       -> QualityReviewAgent
-      -> Final response
     -> LangChain tools
-    -> SQLite state + local trace fallback
-    -> FAISS vector store for document retrieval
-    -> Optional LangSmith tracing
+    -> RAG layer
+    -> SQLite memory + traces
+    -> MCP + A2A endpoints
 ```
 
-What each layer does:
-- `api/backend.py`: public API, task endpoints, MCP-style adapter, and metadata endpoints
-- `agents/orchestrator.py`: LangGraph supervisor-worker routing plus reviewer/reflection pass and deterministic fallback when no paid chat model is configured
-- `askmamma/tools.py`: typed tools with clear schemas for item lookup, availability, partner lookup, forecast, recommendations, document search, reporting, and audit logging
-- `rag/retrieval.py`: document ingestion, chunking, embedding selection, and FAISS semantic retrieval
-- `db/database.py`: SQLite schema for demo items, memory, traces, and documents
-- `ui/app.py`: Streamlit dashboard and chat interface
-- `frontend/`: React presentation frontend served by FastAPI after build
+Supporting diagrams live in:
 
-## Folder Structure
+- [Architecture](docs/architecture-diagram.md)
+- [Agents](docs/agent-diagram.md)
+- [Workflow](docs/workflow-diagram.md)
+- [Interview Guide](docs/interview-guide.md)
 
-```text
-api/backend.py            FastAPI backend
-ui/app.py                 Streamlit dashboard/chat frontend
-frontend/                 React presentation frontend
-agents/orchestrator.py    LangGraph multi-agent orchestration
-askmamma/tools.py         LangChain-compatible AskMamma demo tools
-rag/retrieval.py          Document ingestion and embedding retrieval
-db/database.py            SQLite schema and CRUD helpers
-core/llm_provider.py      OpenAI, Azure OpenAI, and Ollama provider config
-core/observability.py     LangSmith setup and redaction helpers
-scripts/seed_data.py      Demo data and document indexing
-scripts/evaluate_agent.py Route/tool/answer/intermediate-step evaluation
-tests/                    API, RAG, routing, tool, MCP, and evaluation tests
-documents/                Sample knowledge-base documents
-```
+## Project Layout
 
-## One-Command Start
+Key folders:
 
-From PowerShell, run:
+- [agents](agents/README.md)
+- [workflows](workflows/README.md)
+- [tools](tools/README.md)
+- [rag](rag/README.md)
+- [memory](memory/README.md)
+- [api](api/README.md)
+- [ui](ui/README.md)
+- [ml](ml/README.md)
+- [protocols](protocols/README.md)
+- [evaluation](evaluation/README.md)
+- [tests](tests/README.md)
+- [docs](docs/README.md)
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/start_all.ps1
-```
+Each folder contains a small README describing its purpose, responsibilities, and interactions.
 
-Or, for the simplest one-command launcher from the project root:
+## Agents
 
-```powershell
-.\start.cmd
-```
+The main agents are:
 
-This script:
-- creates or repairs `.venv`
-- upgrades `pip`
-- installs `requirements.txt`
-- installs frontend dependencies when needed
-- builds the React frontend
-- creates `.env` from `.env.example` if needed
-- seeds the local database and vector store
-- starts the FastAPI backend
-- opens `http://127.0.0.1:8000` in your browser
+- `SupervisorAgent`
+- `InventoryAgent`
+- `ForecastAgent`
+- `DocumentAgent`
+- `ReportingAgent`
+- `QualityReviewAgent`
+- `MemoryAgent`
+- `ResearchAgent`
 
-Open:
+Each agent module includes:
 
-```text
-http://127.0.0.1:8000
-```
+- a system prompt
+- responsibilities
+- routing rules
+- tool definitions
+- logging guidance
+- trace metadata
 
-## Manual Setup
+## LangGraph Flow
+
+The graph is implemented in `workflows/langgraph/workflow.py`. The runtime flow is:
+
+1. `SupervisorAgent` classifies the request.
+2. A specialist agent handles inventory, forecasting, document, research, or direct reporting work.
+3. `ReportingAgent` packages the result into Markdown, TXT, and JSON views.
+4. `QualityReviewAgent` checks grounding and clarity.
+5. Memory and traces are stored.
+
+The API also exposes a Mermaid view at `GET /agent/graph`.
+
+## RAG
+
+The RAG pipeline supports:
+
+- `PDF`
+- `TXT`
+- `DOCX`
+- `MD`
+- `CSV`
+
+It uses:
+
+- `RecursiveCharacterTextSplitter`
+- `FAISS`
+- OpenAI or Azure embeddings when configured
+- local deterministic embeddings when running offline
+
+## MCP and A2A
+
+MCP-style endpoints:
+
+- `GET /mcp/tools`
+- `GET /mcp/resources`
+- `GET /mcp/prompts`
+- `POST /mcp/rpc`
+
+A2A-style endpoints:
+
+- `GET /.well-known/agent-card.json`
+- `POST /agent/tasks`
+- `GET /agent/tasks/{task_id}`
+
+## UI
+
+The Streamlit UI now includes:
+
+- agent activity panel
+- tool activity panel
+- LangGraph Mermaid view
+- memory viewer
+- MCP viewer
+- forecast chart
+
+Run it through [ui/app.py](ui/app.py) once the backend is up.
+
+## ML Examples
+
+Optional learning examples are included in:
+
+- [ml/tensorflow](ml/tensorflow/README.md)
+- [ml/pytorch](ml/pytorch/README.md)
+
+These scripts are intentionally lightweight and are not required for the core app to run.
+
+## Setup
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 copy .env.example .env
-```
-
-Seed the local database and build the vector index:
-
-```powershell
 python scripts/seed_data.py
-```
-
-## Environment
-
-The tracked template is `.env.example`.
-
-Important settings:
-
-```text
-APP_ENV=development
-DATABASE_URL=sqlite:///askmamma.db
-LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.1
-OPENAI_MODEL=gpt-4o-mini
-
-OPENAI_API_KEY=
-AZURE_OPENAI_API_KEY=
-AZURE_OPENAI_ENDPOINT=
-AZURE_OPENAI_DEPLOYMENT=
-AZURE_OPENAI_API_VERSION=2024-10-21
-
-LANGSMITH_API_KEY=
-LANGSMITH_ENDPOINT=https://api.smith.langchain.com
-LANGSMITH_PROJECT=askmamma-agent
-LANGSMITH_TRACING=true
-LANGCHAIN_TRACING_V2=true
-```
-
-Provider behavior:
-- `LLM_PROVIDER=openai`: uses LangChain `ChatOpenAI` if `OPENAI_API_KEY` is set
-- `LLM_PROVIDER=azure`: uses LangChain `AzureChatOpenAI` if Azure settings are set
-- `LLM_PROVIDER=ollama`: keeps local Ollama generation config available, while the agent falls back to deterministic graph behavior when no tool-calling chat model is configured
-- embeddings: prefer OpenAI/Azure embeddings when configured, otherwise use deterministic local hash embeddings for offline FAISS retrieval
-
-## Run Backend
-
-```powershell
 python -m uvicorn api.backend:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Health check:
+Streamlit:
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/health
+streamlit run ui/app.py
 ```
 
-## Build Frontend
-
-The React app lives in `frontend/` and is served by FastAPI after build.
-
-Build it with:
+One-command launcher:
 
 ```powershell
-cd frontend
-npm install
-npm run build
+.\start.cmd
 ```
 
-Open:
-
-```text
-http://127.0.0.1:8000
-```
-
-## Key API Endpoints
-
-- `POST /agent/chat`
-- `POST /agent/run-task`
-- `POST /agent/tasks`
-- `GET /agent/tools`
-- `GET /agent/traces`
-- `GET /agent/sessions/{session_id}`
-- `GET /demo/items`
-- `GET /demo/availability/low`
-- `GET /demo/availability/out`
-- `POST /demo/availability/restock`
-- `POST /demo/forecast`
-- `POST /documents/upload`
-- `POST /documents/reindex`
-- `POST /documents/search`
-- `GET /mcp/tools`
-- `POST /mcp/rpc`
-- `GET /.well-known/agent-card.json`
-
-## RAG
-
-The document pipeline now uses:
-- `RecursiveCharacterTextSplitter`
-- OpenAI/Azure embeddings when configured, otherwise deterministic local embeddings
-- `FAISS`
-- local vector store persistence in `vector_store/`
-
-Reindex documents:
-
-```powershell
-Invoke-RestMethod -Method Post http://localhost:8000/documents/reindex
-```
-
-Search documents:
-
-```powershell
-Invoke-RestMethod -Method Post http://localhost:8000/documents/search `
-  -ContentType application/json `
-  -Body '{"query":"return policy unopened demo items"}'
-```
-
-Upload supports `.pdf`, `.txt`, `.md`, and `.csv`.
-
-## MCP and Agent Metadata
-
-This project includes a lightweight MCP-style adapter:
-- `GET /mcp/tools` lists available tools
-- `GET /mcp/metadata` exposes discovery metadata for the adapter
-- `POST /mcp/rpc` supports JSON-RPC style `tools/list` and `tools/call`
-
-The agent card at `/.well-known/agent-card.json` includes:
-- name
-- description
-- version
-- endpoint and endpoint URL
-- capabilities
-- authentication
-- skills
-- supported input modes
-- supported output modes
-- example prompts
-
-`POST /agent/tasks` returns A2A-style task records with:
-- task id
-- status
-- assigned agent
-- input payload
-- output payload
-- error payload
-- submitted, started, completed, or failed timestamps
-
-`GET /agent/tasks/{task_id}` can be used for simple polling.
-
-## LangSmith
-
-LangSmith tracing is optional.
-
-If you set:
-- `LANGSMITH_API_KEY`
-- `LANGSMITH_ENDPOINT`
-- `LANGSMITH_PROJECT`
-- `LANGCHAIN_TRACING_V2=true`
-
-the app enables LangSmith tracing automatically. If not configured, the project still stores local traces in SQLite.
-
-## Demo-Only Features
-
-These are intentionally demo/sample features:
-- seeded item catalog and availability data
-- partner and movement records
-- historical sales and forecast examples
-- reorder recommendations
-- generated markdown reports
-
-They are useful for demonstrating agent tooling, not for representing a production AskMamma business domain.
-
-## Safety and Guardrails
-
-The backend includes:
-- Pydantic input validation
-- explicit confirmation for destructive writes and movement writes
-- in-memory rate limiting for agent and MCP endpoints
-- secret redaction in stored traces
-- clear demo/sample labels in tool and answer wording
-- local SQLite trace fallback when LangSmith is not configured
-
-## Evaluation
-
-Run the evaluation suite:
-
-```powershell
-python scripts/evaluate_agent.py
-```
-
-It checks:
-- final answer quality
-- selected route
-- expected tools called
-- route path and intermediate steps
-- simple-answer cases
-- RAG answer quality
-- forecast answer quality
-
-## Tests
-
-Run:
+## Tests and Evaluation
 
 ```powershell
 python -m pytest -q
+python scripts/evaluate_agent.py
 ```
 
-Coverage includes:
-- embedding-backed RAG retrieval
-- tool invocation
-- memory persistence
-- LangGraph routing
-- API endpoints
-- MCP/A2A-style metadata endpoints
-- evaluation script behavior
+## Notes
 
-## Troubleshooting
-
-- Backend not reachable: start `uvicorn api.backend:app --port 8000`
-- Empty demo items or missing vectors: run `python scripts/seed_data.py`
-- Document results missing: run `POST /documents/reindex`
-- Ollama not reachable: run `ollama serve` and `ollama pull llama3.1`
-- LangSmith not tracing: verify `LANGSMITH_API_KEY`, `LANGSMITH_ENDPOINT`, and `LANGSMITH_PROJECT`
-- Demo movement blocked: pass `"confirm": true`
+- The inventory and document data are seeded demo data.
+- The ML examples are for learning and comparison, not production forecasting.
+- If no hosted model is configured, the workflow falls back to deterministic behavior so the project still runs offline.

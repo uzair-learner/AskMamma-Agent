@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ from db.database import get_connection, initialize_database, rows_to_dicts, utc_
 
 
 DOCUMENTS_DIR = Path(__file__).resolve().parents[1] / "documents"
-SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".csv"}
+SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".csv", ".docx"}
 
 
 class LocalHashEmbeddings(Embeddings):
@@ -61,7 +62,7 @@ def embeddings_model() -> Embeddings:
 def sanitize_filename(file_name: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", Path(file_name).name)
     if Path(safe).suffix.lower() not in SUPPORTED_EXTENSIONS:
-        raise ValueError("Unsupported file type. Use PDF, txt, markdown, or CSV.")
+        raise ValueError("Unsupported file type. Use PDF, DOCX, txt, markdown, or CSV.")
     return safe
 
 
@@ -70,6 +71,13 @@ def _read_file(path: Path) -> list[tuple[str, int | None]]:
     if suffix == ".pdf":
         reader = PdfReader(str(path))
         return [(page.extract_text() or "", index + 1) for index, page in enumerate(reader.pages)]
+    if suffix == ".docx":
+        with zipfile.ZipFile(path) as archive:
+            document_xml = archive.read("word/document.xml").decode("utf-8", errors="ignore")
+        text = re.sub(r"</w:p>", "\n", document_xml)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).replace(" \n ", "\n").strip()
+        return [(text, None)]
     return [(path.read_text(encoding="utf-8"), None)]
 
 

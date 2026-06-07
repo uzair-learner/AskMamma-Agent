@@ -66,6 +66,7 @@ class DocumentSearchInput(BaseModel):
 
 class DemoReportInput(BaseModel):
     title: str = Field(default="AskMamma Operations Report", min_length=3, max_length=120)
+    output_format: str = Field(default="md", description="One of xlsx, txt, json, or md.")
 
 
 class DemoMovementInput(BaseModel):
@@ -257,13 +258,15 @@ def add_demo_movement(
     return {"item": get_product(product_id), "movement_type": movement_type, "quantity": quantity}
 
 
-def write_demo_report(title: str = "AskMamma Operations Report") -> dict[str, Any]:
+def write_demo_report(title: str = "AskMamma Operations Report", output_format: str = "md") -> dict[str, Any]:
     config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
     low = low_stock_products()
     out = out_of_stock_products()
     recs = demo_reorder_recommendations()
     forecast = demo_forecast(months=6)
-    file_name = f"askmamma-report-{datetime.now().strftime('%Y%m%d-%H%M%S')}.xlsx"
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    output_format = output_format.lower()
+    file_name = f"askmamma-report-{timestamp}.{output_format}"
     path = config.REPORT_DIR / file_name
     summary_rows = [
         {"Metric": "Report Title", "Value": title},
@@ -273,32 +276,61 @@ def write_demo_report(title: str = "AskMamma Operations Report") -> dict[str, An
         {"Metric": "Forecast Snapshot", "Value": forecast.get("explanation", forecast.get("message"))},
         {"Metric": "Notes", "Value": "Calculated from local inventory/demo data. AI may explain outputs but does not invent stock or forecast numbers."},
     ]
-    with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Summary", index=False)
-        pd.DataFrame(low or [{"message": "No low-availability demo items"}]).to_excel(
-            writer,
-            sheet_name="Low Stock",
-            index=False,
-        )
-        pd.DataFrame(out or [{"message": "No out-of-stock demo items"}]).to_excel(
-            writer,
-            sheet_name="Out of Stock",
-            index=False,
-        )
-        pd.DataFrame(recs or [{"message": "No reorder recommendations"}]).to_excel(
-            writer,
-            sheet_name="Reorder Recommendations",
-            index=False,
-        )
-        pd.DataFrame(
-            [
+    if output_format == "json":
+        path.write_text(
+            json.dumps(
                 {
-                    "method": forecast.get("method"),
-                    "predicted_quantity": forecast.get("predicted_quantity"),
-                    "explanation": forecast.get("explanation", forecast.get("message")),
-                }
-            ]
-        ).to_excel(writer, sheet_name="Forecast", index=False)
+                    "summary": summary_rows,
+                    "low_stock": low,
+                    "out_of_stock": out,
+                    "recommendations": recs,
+                    "forecast": forecast,
+                },
+                indent=2,
+                default=str,
+            ),
+            encoding="utf-8",
+        )
+    elif output_format == "md":
+        lines = [f"# {title}", "", f"Generated: {utc_now()}", "", "## Summary"]
+        lines.extend([f"- {row['Metric']}: {row['Value']}" for row in summary_rows])
+        lines.extend(["", "## Reorder Recommendations"])
+        lines.extend([f"- {item['sku']} {item['name']}: recommend {item['recommended_quantity']}" for item in recs] or ["- None"])
+        path.write_text("\n".join(lines), encoding="utf-8")
+    elif output_format == "txt":
+        lines = [title, f"Generated: {utc_now()}", ""]
+        lines.extend([f"{row['Metric']}: {row['Value']}" for row in summary_rows])
+        path.write_text("\n".join(lines), encoding="utf-8")
+    else:
+        if output_format != "xlsx":
+            output_format = "xlsx"
+            path = config.REPORT_DIR / f"askmamma-report-{timestamp}.xlsx"
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Summary", index=False)
+            pd.DataFrame(low or [{"message": "No low-availability demo items"}]).to_excel(
+                writer,
+                sheet_name="Low Stock",
+                index=False,
+            )
+            pd.DataFrame(out or [{"message": "No out-of-stock demo items"}]).to_excel(
+                writer,
+                sheet_name="Out of Stock",
+                index=False,
+            )
+            pd.DataFrame(recs or [{"message": "No reorder recommendations"}]).to_excel(
+                writer,
+                sheet_name="Reorder Recommendations",
+                index=False,
+            )
+            pd.DataFrame(
+                [
+                    {
+                        "method": forecast.get("method"),
+                        "predicted_quantity": forecast.get("predicted_quantity"),
+                        "explanation": forecast.get("explanation", forecast.get("message")),
+                    }
+                ]
+            ).to_excel(writer, sheet_name="Forecast", index=False)
     with get_connection() as connection:
         connection.execute(
             """
@@ -310,7 +342,7 @@ def write_demo_report(title: str = "AskMamma Operations Report") -> dict[str, An
     return {
         "path": str(path),
         "file_name": path.name,
-        "summary": f"Saved Excel report to {path}",
+        "summary": f"Saved report to {path}",
         "download_name": path.name,
     }
 

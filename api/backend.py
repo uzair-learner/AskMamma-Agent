@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
 from collections import defaultdict, deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,12 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
-from agents.orchestrator import get_recent_traces, get_session_messages, invoke_agent
+from agents.orchestrator import get_recent_traces, get_session_messages, invoke_agent, workflow_mermaid
 from askmamma.tools import (
     add_demo_movement,
     demo_forecast,
     demo_reorder_recommendations,
-    invoke_named_tool,
     tool_registry,
     write_demo_report,
 )
@@ -37,6 +36,10 @@ from db.database import (
     out_of_stock_products,
     update_product,
 )
+from memory.service import audit_memory, conversation_memory, semantic_memory
+from protocols.a2a.service import create_task_record, utcnow
+from protocols.agent_cards.builder import build_agent_card
+from protocols.mcp.server import handle_rpc, list_prompts, list_resources, list_tools
 from rag.retrieval import document_search, reindex_documents, save_uploaded_document
 
 
@@ -102,20 +105,6 @@ class TaskPayload(BaseModel):
     status: str = "submitted"
 
 
-class TaskRecord(BaseModel):
-    task_id: str
-    status: str
-    assigned_agent: str | None = None
-    input_payload: dict[str, Any]
-    output_payload: dict[str, Any] | None = None
-    error_payload: dict[str, Any] | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    submitted_at: str
-    started_at: str | None = None
-    completed_at: str | None = None
-    failed_at: str | None = None
-
-
 class DocumentSearchPayload(BaseModel):
     query: str = Field(..., min_length=1)
     limit: int = Field(default=5, ge=1, le=10)
@@ -147,18 +136,6 @@ def _enforce_rate_limit(key: str) -> None:
 def _request_key(request: Request, suffix: str) -> str:
     client = request.client.host if request.client else "local"
     return f"{client}:{suffix}"
-
-
-def _rpc_success(request_id: str | int | None, result: Any) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": request_id, "result": result}
-
-
-def _rpc_error(request_id: str | int | None, code: int, message: str) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
-
-
-def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 @app.get("/health")
@@ -263,6 +240,11 @@ def agent_traces(limit: int = 50) -> list[dict[str, Any]]:
     return get_recent_traces(limit)
 
 
+@app.get("/agent/graph")
+def agent_graph() -> dict[str, Any]:
+    return {"format": "mermaid", "graph": workflow_mermaid()}
+
+
 @app.get("/admin/diagnostics")
 def admin_diagnostics() -> dict[str, Any]:
     runtime = current_runtime_status()
@@ -278,21 +260,33 @@ def admin_diagnostics() -> dict[str, Any]:
 
 @app.get("/agent/tools")
 def agent_tools() -> list[dict[str, Any]]:
-    return [tool.model_dump() for tool in tool_registry()]
+    return list_tools()
 
 
 @app.get("/mcp/tools")
 def mcp_tools() -> list[dict[str, Any]]:
-    return agent_tools()
+    return list_tools()
+
+
+@app.get("/mcp/resources")
+def mcp_resources() -> list[dict[str, Any]]:
+    return list_resources()
+
+
+@app.get("/mcp/prompts")
+def mcp_prompts() -> list[dict[str, Any]]:
+    return list_prompts()
 
 
 @app.get("/mcp/metadata")
 def mcp_metadata() -> dict[str, Any]:
     return {
-        "server_name": "AskMamma MCP Adapter",
+        "server_name": "AskMamma MCP Server",
         "transport": "http+jsonrpc",
-        "methods": ["tools/list", "tools/call"],
+        "methods": ["tools/list", "tools/call", "resources/list", "prompts/list", "agents/list"],
         "tool_count": len(tool_registry()),
+        "resource_count": len(list_resources()),
+        "prompt_count": len(list_prompts()),
     }
 
 
@@ -300,44 +294,28 @@ def mcp_metadata() -> dict[str, Any]:
 def mcp_rpc(payload: MCPRpcPayload, request: Request) -> dict[str, Any]:
     _enforce_rate_limit(_request_key(request, "mcp-rpc"))
     try:
-        if payload.method == "tools/list":
-            return _rpc_success(payload.id, agent_tools())
-        if payload.method == "tools/call":
-            tool_name = payload.params.get("name")
-            arguments = payload.params.get("arguments", {})
-            if not tool_name:
-                return _rpc_error(payload.id, -32602, "Missing `name` for tools/call.")
-            return _rpc_success(payload.id, invoke_named_tool(tool_name, arguments))
-        return _rpc_error(payload.id, -32601, f"Unknown method `{payload.method}`.")
+        return handle_rpc(payload.method, payload.id, payload.params)
     except Exception as exc:
-        return _rpc_error(payload.id, -32000, safe_error_message(exc))
+        return {"jsonrpc": "2.0", "id": payload.id, "error": {"code": -32000, "message": safe_error_message(exc)}}
 
 
 @app.post("/agent/tasks")
 def agent_tasks(payload: TaskPayload, request: Request) -> dict[str, Any]:
     _enforce_rate_limit(_request_key(request, "agent-tasks"))
-    task_record = TaskRecord(
-        task_id=payload.task_id,
-        status="submitted",
-        assigned_agent=payload.from_agent,
-        input_payload={"message": payload.message},
-        metadata=payload.metadata,
-        submitted_at=_utcnow(),
-    )
-    TASK_STORE[payload.task_id] = task_record.model_dump()
+    TASK_STORE[payload.task_id] = create_task_record(payload.task_id, payload.message, payload.metadata, payload.from_agent)
     TASK_STORE[payload.task_id]["status"] = "running"
-    TASK_STORE[payload.task_id]["started_at"] = _utcnow()
+    TASK_STORE[payload.task_id]["started_at"] = utcnow()
 
     try:
         result = invoke_agent(payload.message, payload.task_id)
         TASK_STORE[payload.task_id]["status"] = "completed"
         TASK_STORE[payload.task_id]["assigned_agent"] = result.get("selected_agent") or payload.from_agent
         TASK_STORE[payload.task_id]["output_payload"] = result
-        TASK_STORE[payload.task_id]["completed_at"] = _utcnow()
+        TASK_STORE[payload.task_id]["completed_at"] = utcnow()
     except Exception as exc:
         TASK_STORE[payload.task_id]["status"] = "failed"
         TASK_STORE[payload.task_id]["error_payload"] = {"message": safe_error_message(exc)}
-        TASK_STORE[payload.task_id]["failed_at"] = _utcnow()
+        TASK_STORE[payload.task_id]["failed_at"] = utcnow()
         raise
 
     return TASK_STORE[payload.task_id]
@@ -368,14 +346,14 @@ def documents_search(payload: DocumentSearchPayload) -> dict[str, Any]:
 
 
 @app.get("/reports/demo", summary="Generate a sample demo report")
-def reports_demo() -> dict[str, Any]:
-    report = write_demo_report()
+def reports_demo(output_format: str = "md") -> dict[str, Any]:
+    report = write_demo_report(output_format=output_format)
     return {**report, "download_url": f"/reports/download/{report['file_name']}"}
 
 
 @app.get("/reports/askmamma")
-def reports_askmamma() -> dict[str, Any]:
-    report = write_demo_report("AskMamma Operations Report")
+def reports_askmamma(output_format: str = "md") -> dict[str, Any]:
+    report = write_demo_report("AskMamma Operations Report", output_format=output_format)
     return {**report, "download_url": f"/reports/download/{report['file_name']}"}
 
 
@@ -388,7 +366,7 @@ def reports_demo_forecast() -> dict[str, Any]:
 def reports_list() -> list[dict[str, Any]]:
     config.REPORT_DIR.mkdir(parents=True, exist_ok=True)
     reports = []
-    for path in sorted(config.REPORT_DIR.glob("*.xlsx"), key=lambda item: item.stat().st_mtime, reverse=True):
+    for path in sorted(config.REPORT_DIR.glob("*.*"), key=lambda item: item.stat().st_mtime, reverse=True):
         stats = path.stat()
         reports.append(
             {
@@ -413,37 +391,22 @@ def reports_download(file_name: str) -> FileResponse:
 
 @app.get("/.well-known/agent-card.json")
 def agent_card() -> dict[str, Any]:
-    return {
-        "name": "AskMamma Assistant",
-        "description": "AI-powered AskMamma agent with LangGraph routing, LangChain tools, embedding-backed RAG, memory, demo/sample data, reports, and traces.",
-        "version": "2.0.0",
-        "endpoint_url": "/agent/chat",
-        "endpoint": "/agent/chat",
-        "capabilities": {
-            "tool_calling": True,
-            "rag": True,
-            "memory": True,
-            "multi_agent": True,
-            "task_execution": True,
-            "mcp_adapter": True,
-            "langsmith_tracing_optional": bool(config.LANGSMITH_API_KEY),
-        },
-        "authentication": {"type": "none", "notes": "local development only"},
-        "skills": [
-            "demo_item_lookup",
-            "demo_availability_analysis",
-            "demo_forecast",
-            "document_search",
-            "demo_report_generation",
-            "quality_review",
-        ],
-        "supported_input_modes": ["text", "task", "jsonrpc"],
-        "supported_output_modes": ["text", "json", "markdown"],
-        "examples": [
-            {"input": "Which sample demo items are low in availability right now?", "route": "AskMammaActionAgent"},
-            {"input": "What does the return policy say about unopened items?", "route": "DocumentAgent"},
-        ],
-    }
+    return build_agent_card()
+
+
+@app.get("/memory/conversation/{session_id}")
+def memory_conversation_view(session_id: str, limit: int = 20) -> dict[str, Any]:
+    return {"session_id": session_id, "records": conversation_memory(session_id, limit=limit)}
+
+
+@app.get("/memory/semantic")
+def memory_semantic_view(limit: int = 50) -> dict[str, Any]:
+    return {"records": semantic_memory(limit=limit)}
+
+
+@app.get("/memory/audit")
+def memory_audit_view(limit: int = 50) -> dict[str, Any]:
+    return {"records": audit_memory(limit=limit)}
 
 
 def _frontend_path(path: str) -> Path:

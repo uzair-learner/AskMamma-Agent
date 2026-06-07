@@ -27,6 +27,10 @@ ENV/
 *.sqlite
 *.sqlite3
 cart-data.json
+generated_reports/
+logs/
+temp/
+.cache/
 
 # Runtime logs
 *.log
@@ -39,6 +43,7 @@ reports/
 outputs/reports/
 uploads/
 vector_store/
+vectorstore/
 
 # Streamlit local config/cache
 .streamlit/secrets.toml

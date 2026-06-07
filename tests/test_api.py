@@ -30,7 +30,7 @@ def test_agent_card_endpoint():
     assert response.status_code == 200
     payload = response.json()
     assert payload["capabilities"]["multi_agent"] is True
-    assert "demo_item_lookup" in payload["skills"]
+    assert "InventoryAgent" in payload["skills"]
 
 
 def test_tool_registry_endpoint():
@@ -84,8 +84,8 @@ def test_agent_tasks_endpoint():
     )
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
-    assert response.json()["assigned_agent"] == "ReportAgent"
-    assert response.json()["output_payload"]["selected_agent"] == "ReportAgent"
+    assert response.json()["assigned_agent"] == "ReportingAgent"
+    assert response.json()["output_payload"]["selected_agent"] == "ReportingAgent"
     assert response.json()["submitted_at"]
     assert response.json()["started_at"]
     assert response.json()["completed_at"]
@@ -111,6 +111,16 @@ def test_mcp_metadata_endpoint():
     response = client.get("/mcp/metadata")
     assert response.status_code == 200
     assert response.json()["transport"] == "http+jsonrpc"
+    assert response.json()["resource_count"] >= 1
+
+
+def test_mcp_resources_and_prompts_endpoints():
+    resources = client.get("/mcp/resources")
+    prompts = client.get("/mcp/prompts")
+    assert resources.status_code == 200
+    assert prompts.status_code == 200
+    assert resources.json()
+    assert prompts.json()
 
 
 def test_admin_diagnostics_endpoint():
@@ -138,12 +148,12 @@ def test_reports_endpoint_returns_excel_download():
     response = client.get("/reports/askmamma")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["file_name"].endswith(".xlsx")
+    assert payload["file_name"].endswith(".md")
     assert payload["download_url"].endswith(payload["file_name"])
 
     download = client.get(payload["download_url"])
     assert download.status_code == 200
-    assert "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" in download.headers["content-type"]
+    assert "text/markdown" in download.headers["content-type"] or "text/plain" in download.headers["content-type"]
 
     report_path = config.REPORT_DIR / payload["file_name"]
     assert report_path.exists()
@@ -155,5 +165,12 @@ def test_reports_list_returns_excel_entries():
     assert response.status_code == 200
     payload = response.json()
     assert payload
-    assert payload[0]["file_name"].endswith(".xlsx")
+    assert payload[0]["file_name"].endswith(".md")
     assert payload[0]["download_url"].endswith(payload[0]["file_name"])
+
+
+def test_agent_graph_endpoint():
+    response = client.get("/agent/graph")
+    assert response.status_code == 200
+    assert response.json()["format"] == "mermaid"
+    assert "SupervisorAgent" in response.json()["graph"]

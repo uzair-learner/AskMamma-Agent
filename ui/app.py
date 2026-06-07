@@ -1,4 +1,4 @@
-"""Streamlit frontend for the AskMamma agent system."""
+"""Streamlit frontend for the AskMamma learning project."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import streamlit as st
 API_BASE_URL = "http://localhost:8000"
 
 st.set_page_config(page_title="AskMamma Agent", layout="wide")
-st.title("AskMamma Assistant")
+st.title("AskMamma Agent Studio")
 
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
@@ -38,6 +38,10 @@ except Exception as exc:
     st.error(f"Backend is not reachable at {API_BASE_URL}: {exc}")
     st.stop()
 
+graph_info = api_get("/agent/graph")
+semantic = api_get("/memory/semantic").get("records", [])
+audit = api_get("/memory/audit").get("records", [])
+
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Sample Items", dashboard["total_products"])
 col2.metric("Low Availability", dashboard["low_stock_products"])
@@ -45,10 +49,10 @@ col3.metric("Unavailable", dashboard["out_of_stock_products"])
 high_demand = dashboard.get("predicted_high_demand_products", [])
 col4.metric("Forecast Signals", len(high_demand))
 
-left, right = st.columns([1.25, 1])
+left, right = st.columns([1.1, 1.2])
 
 with left:
-    st.subheader("Sample Demo Items")
+    st.subheader("Inventory Workspace")
     search = st.text_input("Search sample demo items", "")
     button_cols = st.columns(5)
     if button_cols[0].button("Refresh data"):
@@ -81,17 +85,17 @@ with left:
     else:
         st.caption("No sample demo items found.")
 
-    if st.session_state.get("show_traces", False):
-        st.subheader("Recent Agent Traces")
-        traces = api_get("/agent/traces", limit=10)
-        for trace in traces:
-            with st.expander(f"{trace['created_at']} - {trace['selected_agent']}"):
-                st.write(trace["user_input"])
-                st.code(trace["tools_called"])
-                st.write(trace["final_answer"])
+    st.subheader("Forecast Snapshot")
+    if high_demand:
+        chart_df = pd.DataFrame(high_demand)
+        if {"name", "sold"}.issubset(chart_df.columns):
+            st.bar_chart(chart_df.set_index("name")["sold"])
+
+    st.subheader("LangGraph")
+    st.code(graph_info["graph"], language="mermaid")
 
 with right:
-    st.subheader("Chat")
+    st.subheader("Agent Console")
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
@@ -109,11 +113,34 @@ with right:
                 )
                 answer = result["answer"]
                 st.markdown(answer)
-                if result.get("tools_called"):
-                    with st.expander("Tools used"):
-                        st.write(result["selected_agent"])
-                        st.code(", ".join(result["tools_called"]))
+                info_cols = st.columns(3)
+                info_cols[0].metric("Selected Agent", result.get("selected_agent", "n/a"))
+                info_cols[1].metric("Tools", len(result.get("tools_called", [])))
+                info_cols[2].metric("Latency ms", result.get("response_time_ms", 0))
+                with st.expander("Agent Activity", expanded=True):
+                    st.write(result.get("route_path", []))
+                    st.json(result.get("intermediate_steps", []))
+                with st.expander("Tool Activity"):
+                    st.code(", ".join(result.get("tools_called", [])) or "No tools used")
+                with st.expander("Report Bundle"):
+                    st.json(result.get("report_bundle", {}))
             except Exception as exc:
                 answer = f"Sorry, I could not reach the agent: {exc}"
                 st.error(answer)
         st.session_state.messages.append({"role": "assistant", "content": answer})
+
+    st.subheader("Memory Viewer")
+    tabs = st.tabs(["Semantic", "Audit", "Traces"])
+    with tabs[0]:
+        st.dataframe(pd.DataFrame(semantic), use_container_width=True)
+    with tabs[1]:
+        st.dataframe(pd.DataFrame(audit), use_container_width=True)
+    with tabs[2]:
+        traces = api_get("/agent/traces", limit=10)
+        st.dataframe(pd.DataFrame(traces), use_container_width=True)
+
+    st.subheader("MCP Viewer")
+    mcp_cols = st.columns(3)
+    mcp_cols[0].metric("Tools", len(api_get("/mcp/tools")))
+    mcp_cols[1].metric("Resources", len(api_get("/mcp/resources")))
+    mcp_cols[2].metric("Prompts", len(api_get("/mcp/prompts")))
