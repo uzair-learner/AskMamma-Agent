@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib.util import find_spec
+import logging
 from typing import Any, Protocol
 
 import requests
@@ -15,6 +16,17 @@ from core.observability import configure_langsmith
 LLM_UNAVAILABLE_MESSAGE = (
     "LLM is not configured or available. Please configure OpenAI, Azure OpenAI, or Ollama before using Inventory Pilot AI."
 )
+LOGGER = logging.getLogger(__name__)
+_LAST_OLLAMA_ERROR: str | None = None
+
+
+def _set_last_ollama_error(message: str | None) -> None:
+    global _LAST_OLLAMA_ERROR
+    _LAST_OLLAMA_ERROR = message
+
+
+def last_ollama_error() -> str | None:
+    return _LAST_OLLAMA_ERROR
 
 
 class LLMProvider(Protocol):
@@ -98,15 +110,6 @@ def _ollama_model_catalog() -> list[str]:
 
 def resolve_ollama_model_name() -> str:
     configured = (config.OLLAMA_MODEL or "").strip()
-    available = _ollama_model_catalog()
-    if not available:
-        return configured
-    if configured in available:
-        return configured
-    configured_base = configured.split(":", 1)[0]
-    for model_name in available:
-        if model_name.split(":", 1)[0] == configured_base:
-            return model_name
     return configured
 
 
@@ -114,17 +117,55 @@ def _ollama_model_available() -> bool:
     configured = (config.OLLAMA_MODEL or "").strip()
     if not configured:
         return False
-    resolved = resolve_ollama_model_name()
-    if not resolved:
-        return False
-    configured_base = configured.split(":", 1)[0]
-    resolved_base = resolved.split(":", 1)[0]
-    return configured == resolved or configured_base == resolved_base
+    return configured in _ollama_model_catalog()
 
 
 def _ollama_pull_model_name() -> str:
     configured = (config.OLLAMA_MODEL or "").strip()
     return configured.split(":", 1)[0] if configured else configured
+
+
+def installed_ollama_models() -> list[str]:
+    return _ollama_model_catalog()
+
+
+def validate_ollama_configuration() -> dict[str, Any]:
+    configured_model = (config.OLLAMA_MODEL or "").strip()
+    base_url = (config.OLLAMA_BASE_URL or "").strip()
+    models = installed_ollama_models()
+    reachable = bool(models)
+    model_available = configured_model in models if configured_model else False
+    active_model = configured_model if model_available else None
+    error: str | None = None
+
+    if config.LLM_PROVIDER == "ollama":
+        LOGGER.info(
+            "Loaded Ollama config provider=%s base_url=%s model=%s installed_models=%s",
+            config.LLM_PROVIDER,
+            base_url,
+            configured_model,
+            models,
+        )
+        if not base_url:
+            error = "OLLAMA_BASE_URL is not configured."
+        elif not reachable:
+            error = f"Unable to connect to Ollama at {base_url}"
+        elif not model_available:
+            error = (
+                f"Configured Ollama model '{configured_model}' was not found. "
+                f"Installed models: {models}"
+            )
+
+    _set_last_ollama_error(error)
+    return {
+        "configured_model": configured_model,
+        "active_model": active_model,
+        "ollama_base_url": base_url,
+        "ollama_reachable": reachable,
+        "installed_ollama_models": models,
+        "model_available": model_available,
+        "last_error": error,
+    }
 
 
 def current_model_name() -> str:
@@ -136,7 +177,7 @@ def current_model_name() -> str:
 
 
 def ollama_reachable() -> bool:
-    return OllamaProvider().available()
+    return validate_ollama_configuration()["ollama_reachable"]
 
 
 @dataclass
@@ -144,31 +185,17 @@ class OllamaProvider:
     name: str = "ollama"
 
     def available(self) -> bool:
-        # Check base URL and whether configured model appears in the server catalog.
-        base = (config.OLLAMA_BASE_URL or "").strip()
-        if not base:
-            return False
-        try:
-            models = _ollama_model_catalog()
-            if not models:
-                # try a simple health check
-                try:
-                    resp = requests.get(f"{base.rstrip('/')}/ping", timeout=2)
-                    if resp.ok:
-                        return True
-                except requests.RequestException:
-                    return False
-                return False
-            # If a configured model is present (or a base match), consider Ollama available
-            resolved = resolve_ollama_model_name()
-            if resolved and any(resolved == m or resolved.split(":", 1)[0] == m.split(":", 1)[0] for m in models):
-                return True
-            return False
-        except Exception:
-            return False
+        diagnostics = validate_ollama_configuration()
+        return diagnostics["ollama_reachable"] and diagnostics["model_available"]
 
     def generate(self, prompt: str) -> str:
         model_name = resolve_ollama_model_name()
+        LOGGER.info(
+            "Ollama request selected_model=%s base_url=%s prompt_chars=%s",
+            model_name,
+            config.OLLAMA_BASE_URL,
+            len(prompt),
+        )
         try:
             url = f"{config.OLLAMA_BASE_URL.rstrip('/')}/api/generate"
             # Try common payload shapes used by different Ollama releases.
@@ -209,20 +236,33 @@ class OllamaProvider:
                     # Return the raw text body if the response shape is unexpected.
                     text = response.text.strip()
                     if text:
+                        LOGGER.info("Ollama request succeeded selected_model=%s", model_name)
                         return text
                 except Exception as exc:
                     last_exc = exc
                     continue
             runtime_error = _chat_model_runtime_error()
             if runtime_error:
+                LOGGER.error("Ollama request failed selected_model=%s error=%s", model_name, runtime_error)
                 raise RuntimeError(runtime_error) from last_exc
+            LOGGER.error(
+                "Ollama request failed selected_model=%s error=%s",
+                model_name,
+                f"Unable to get a response from Ollama model {config.OLLAMA_MODEL} at {config.OLLAMA_BASE_URL}",
+            )
             raise RuntimeError(
                 f"Unable to get a response from Ollama model {config.OLLAMA_MODEL} at {config.OLLAMA_BASE_URL}"
             ) from last_exc
         except requests.RequestException as exc:
             runtime_error = _chat_model_runtime_error()
             if runtime_error:
+                LOGGER.error("Ollama request failed selected_model=%s error=%s", model_name, runtime_error)
                 raise RuntimeError(runtime_error) from exc
+            LOGGER.error(
+                "Ollama request failed selected_model=%s raw_error=%s",
+                model_name,
+                str(exc),
+            )
             raise RuntimeError(
                 f"Unable to get a response from Ollama model {config.OLLAMA_MODEL} at {config.OLLAMA_BASE_URL}"
             ) from exc
@@ -374,11 +414,12 @@ def _chat_model_runtime_error() -> str | None:
     if not _dependency_installed("langchain_ollama"):
         return "langchain-ollama package is missing. Run: pip install langchain-ollama"
 
-    models = _ollama_model_catalog()
+    diagnostics = validate_ollama_configuration()
+    models = diagnostics["installed_ollama_models"]
     if not models:
         return f"Unable to connect to Ollama at {base_url}"
 
-    if not _ollama_model_available():
+    if not diagnostics["model_available"]:
         return f"Ollama model {config.OLLAMA_MODEL} is not available. Run: ollama pull {_ollama_pull_model_name()}"
 
     return None
@@ -472,13 +513,19 @@ def get_embedding_provider() -> EmbeddingProvider | None:
 
 
 def current_runtime_status() -> dict[str, Any]:
+    diagnostics = validate_ollama_configuration()
     runtime_error = _chat_model_runtime_error()
     llm_available = runtime_error is None
     return {
         "provider": current_provider_name(),
-        "model": current_model_name(),
+        "configured_model": diagnostics["configured_model"] or current_model_name(),
+        "active_model": diagnostics["active_model"] or (current_model_name() if llm_available else None),
+        "model": diagnostics["configured_model"] or current_model_name(),
         "llm_used": llm_available,
-        "ollama_base_url": config.OLLAMA_BASE_URL,
-        "ollama_reachable": ollama_reachable(),
+        "ollama_base_url": diagnostics["ollama_base_url"],
+        "ollama_reachable": diagnostics["ollama_reachable"],
+        "installed_ollama_models": diagnostics["installed_ollama_models"],
+        "model_available": diagnostics["model_available"],
         "runtime_error": runtime_error,
+        "last_error": diagnostics["last_error"],
     }

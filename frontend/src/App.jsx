@@ -74,6 +74,14 @@ function formatGeneratedAt(value) {
   return new Date(value).toLocaleString();
 }
 
+function isVerifiedOllamaResponse(meta) {
+  if (!meta) {
+    return false;
+  }
+  const source = String(meta.ai_source || meta.provider || "").trim().toLowerCase();
+  return source === "ollama" && Boolean(meta.llm_used) && Boolean(String(meta.model || "").trim());
+}
+
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
@@ -108,6 +116,7 @@ export default function App() {
   const [reports, setReports] = useState([]);
   const [diagnostics, setDiagnostics] = useState(null);
   const [pageInsight, setPageInsight] = useState(null);
+  const [pageInsightLoading, setPageInsightLoading] = useState(false);
   const [selectedProductId, setSelectedProductId] = useState(null);
   const [productQuery, setProductQuery] = useState("");
   const [chatInput, setChatInput] = useState("");
@@ -123,14 +132,6 @@ export default function App() {
       role: "assistant",
       content:
         "Welcome to Inventory Pilot AI. Ask about inventory, forecasting, reorder recommendations, suppliers, reports, or documents.",
-      meta: {
-        provider: "",
-        model: "",
-        llm_used: false,
-        selected_agent: "SupervisorAgent",
-        tools_called: [],
-        response_time_ms: 0,
-      },
     },
   ]);
 
@@ -176,29 +177,35 @@ export default function App() {
     const path = insightPath(routeState, selectedProductId);
     if (!path) {
       setPageInsight(null);
+      setPageInsightLoading(false);
       return () => {
         cancelled = true;
       };
     }
 
+    setPageInsightLoading(true);
     request(path)
       .then((insight) => {
         if (!cancelled) {
-          startTransition(() => setPageInsight(insight));
+          startTransition(() => {
+            setPageInsight(insight);
+            setPageInsightLoading(false);
+          });
         }
       })
       .catch((loadError) => {
         if (!cancelled) {
-          startTransition(() =>
+          startTransition(() => {
             setPageInsight({
               ai_explanation: "Ollama is unavailable. AI content was not generated.",
               ai_source: "Ollama",
               provider: "Ollama",
-              model: "llama3.2:latest",
+              model: diagnostics?.configured_model ?? diagnostics?.model ?? "Unavailable",
               llm_used: false,
               generated_at: new Date().toISOString(),
-            }),
-          );
+            });
+            setPageInsightLoading(false);
+          });
         }
       });
 
@@ -455,7 +462,14 @@ export default function App() {
         {forecastSummary ? <div className="info-banner">{forecastSummary}</div> : null}
 
         {routeState.route === "dashboard" ? (
-          <DashboardPage cards={dashboardCards} dashboard={dashboard} forecastAlerts={forecastAlerts} highDemandProducts={highDemandProducts} insight={pageInsight} />
+          <DashboardPage
+            cards={dashboardCards}
+            dashboard={dashboard}
+            forecastAlerts={forecastAlerts}
+            highDemandProducts={highDemandProducts}
+            insight={pageInsight}
+            loading={pageInsightLoading}
+          />
         ) : null}
         {routeState.route === "products" ? (
           <ProductsPage
@@ -467,12 +481,28 @@ export default function App() {
             selectedProduct={selectedProduct}
             setSelectedProductId={setSelectedProductId}
             insight={pageInsight}
+            loading={pageInsightLoading}
           />
         ) : null}
-        {routeState.route === "forecasts" ? <ForecastsPage forecastAlerts={forecastAlerts} onOpenReorder={() => navigateTo("reorder")} insight={pageInsight} /> : null}
-        {routeState.route === "reorder" ? <ReorderPage recommendations={recommendations} insight={pageInsight} /> : null}
-        {routeState.route === "suppliers" ? <SuppliersPage suppliers={suppliers} insight={pageInsight} /> : null}
-        {routeState.route === "reports" ? <ReportsPage reports={reports} onGenerateReport={handleGenerateReport} isGeneratingReport={isGeneratingReport} insight={pageInsight} /> : null}
+        {routeState.route === "forecasts" ? (
+          <ForecastsPage
+            forecastAlerts={forecastAlerts}
+            onOpenReorder={() => navigateTo("reorder")}
+            insight={pageInsight}
+            loading={pageInsightLoading}
+          />
+        ) : null}
+        {routeState.route === "reorder" ? <ReorderPage recommendations={recommendations} insight={pageInsight} loading={pageInsightLoading} /> : null}
+        {routeState.route === "suppliers" ? <SuppliersPage suppliers={suppliers} insight={pageInsight} loading={pageInsightLoading} /> : null}
+        {routeState.route === "reports" ? (
+          <ReportsPage
+            reports={reports}
+            onGenerateReport={handleGenerateReport}
+            isGeneratingReport={isGeneratingReport}
+            insight={pageInsight}
+            loading={pageInsightLoading}
+          />
+        ) : null}
         {routeState.route === "ask" ? (
           <AskPage
             sessionId={sessionId}
@@ -495,20 +525,52 @@ function DataSourceBadge({ text, tone = "local" }) {
 }
 
 function AIProofPanel({ meta }) {
+  const verified = isVerifiedOllamaResponse(meta);
   return (
     <div className="meta-row">
-      <span>AI Source: {meta.ai_source || meta.provider || "Ollama"}</span>
-      <span>Model: {meta.model || "Unavailable"}</span>
-      <span>LLM Used: {meta.llm_used ? "Yes" : "No"}</span>
-      <span>Generated At: {formatGeneratedAt(meta.generated_at)}</span>
+      <span>AI Source: {verified ? "Ollama" : "Not generated by Ollama"}</span>
+      <span>Model: {verified ? meta.model : (meta.model || "Unavailable")}</span>
+      <span>LLM Used: {verified ? "Yes" : "No"}</span>
+      <span>Generated At: {verified ? formatGeneratedAt(meta.generated_at) : "Unavailable"}</span>
     </div>
   );
 }
 
-function AIInsightPanel({ insight }) {
+function AIInsightPanel({ insight, loading = false }) {
   const text = insight?.ai_explanation ?? insight?.message;
+  if (loading) {
+    return (
+      <div className="watch-card architecture-note">
+        <DataSourceBadge text="Checking Ollama status..." tone="local" />
+        <p>Inventory Pilot AI is checking whether Ollama generated this AI section.</p>
+        <AIProofPanel
+          meta={{
+            ai_source: "Ollama",
+            provider: "Ollama",
+            model: "",
+            llm_used: false,
+            generated_at: "",
+          }}
+        />
+      </div>
+    );
+  }
   if (!text) {
-    return null;
+    return (
+      <div className="watch-card architecture-note">
+        <DataSourceBadge text="No AI response generated yet" tone="local" />
+        <p>No Ollama response has been generated for this section yet.</p>
+        <AIProofPanel
+          meta={{
+            ai_source: "Ollama",
+            provider: "Ollama",
+            model: "",
+            llm_used: false,
+            generated_at: "",
+          }}
+        />
+      </div>
+    );
   }
   const badgeText = insight.llm_used
     ? `AI explanation via ${insight.provider} ${insight.model}`
@@ -522,7 +584,7 @@ function AIInsightPanel({ insight }) {
   );
 }
 
-function DashboardPage({ cards, dashboard, forecastAlerts, highDemandProducts, insight }) {
+function DashboardPage({ cards, dashboard, forecastAlerts, highDemandProducts, insight, loading }) {
   return (
     <div className="page-grid">
       <section className="hero-card">
@@ -550,7 +612,7 @@ function DashboardPage({ cards, dashboard, forecastAlerts, highDemandProducts, i
           </div>
         </div>
       </section>
-      <AIInsightPanel insight={insight} />
+      <AIInsightPanel insight={insight} loading={loading} />
 
       <section className="panel">
         <div className="panel-header">
@@ -605,7 +667,7 @@ function DashboardPage({ cards, dashboard, forecastAlerts, highDemandProducts, i
   );
 }
 
-function ProductsPage({ filter, onFilterChange, productQuery, setProductQuery, products, selectedProduct, setSelectedProductId, insight }) {
+function ProductsPage({ filter, onFilterChange, productQuery, setProductQuery, products, selectedProduct, setSelectedProductId, insight, loading }) {
   const filterPills = [
     { key: "all", label: "All Products" },
     { key: "low-stock", label: "Low Stock" },
@@ -625,7 +687,7 @@ function ProductsPage({ filter, onFilterChange, productQuery, setProductQuery, p
           </div>
         </div>
         <DataSourceBadge text="Calculated from local inventory/demo data" />
-        <AIInsightPanel insight={insight} />
+        <AIInsightPanel insight={insight} loading={loading} />
         <div className="pill-row">
           {filterPills.map((pill) => (
             <button key={pill.key} className={`filter-pill ${filter === pill.key ? "filter-pill-active" : ""}`} onClick={() => onFilterChange(pill.key)}>
@@ -699,7 +761,7 @@ function ProductsPage({ filter, onFilterChange, productQuery, setProductQuery, p
   );
 }
 
-function ForecastsPage({ forecastAlerts, onOpenReorder, insight }) {
+function ForecastsPage({ forecastAlerts, onOpenReorder, insight, loading }) {
   return (
     <div className="page-grid">
       <section className="panel">
@@ -714,7 +776,7 @@ function ForecastsPage({ forecastAlerts, onOpenReorder, insight }) {
         </div>
         <DataSourceBadge text="Calculated from local inventory/demo data" />
         <div className="section-label">AI Forecast Explanation</div>
-        <AIInsightPanel insight={insight} />
+        <AIInsightPanel insight={insight} loading={loading} />
         <div className="info-banner">
           Forecasts are calculated using historical demo sales or movement data and forecasting logic. AI may explain the result, but it does not invent stock or forecast numbers.
         </div>
@@ -742,7 +804,7 @@ function ForecastsPage({ forecastAlerts, onOpenReorder, insight }) {
   );
 }
 
-function ReorderPage({ recommendations, insight }) {
+function ReorderPage({ recommendations, insight, loading }) {
   return (
     <div className="page-grid">
       <section className="panel">
@@ -754,7 +816,7 @@ function ReorderPage({ recommendations, insight }) {
         </div>
         <DataSourceBadge text="Calculated from local inventory/demo data" />
         <div className="section-label">AI Reorder Explanation</div>
-        <AIInsightPanel insight={insight} />
+        <AIInsightPanel insight={insight} loading={loading} />
         <div className="list-stack">
           {recommendations.map((item) => (
             <article key={item.item_id} className="list-card">
@@ -778,7 +840,7 @@ function ReorderPage({ recommendations, insight }) {
   );
 }
 
-function SuppliersPage({ suppliers, insight }) {
+function SuppliersPage({ suppliers, insight, loading }) {
   return (
     <div className="page-grid">
       <section className="panel">
@@ -789,7 +851,7 @@ function SuppliersPage({ suppliers, insight }) {
           </div>
         </div>
         <DataSourceBadge text="Calculated from local inventory/demo data" />
-        <AIInsightPanel insight={insight} />
+        <AIInsightPanel insight={insight} loading={loading} />
         <div className="supplier-grid">
           {suppliers.map((supplier) => (
             <article key={supplier.id} className="supplier-card">
@@ -817,7 +879,7 @@ function SuppliersPage({ suppliers, insight }) {
   );
 }
 
-function ReportsPage({ reports, onGenerateReport, isGeneratingReport, insight }) {
+function ReportsPage({ reports, onGenerateReport, isGeneratingReport, insight, loading }) {
   return (
     <div className="page-grid">
       <section className="panel">
@@ -831,7 +893,7 @@ function ReportsPage({ reports, onGenerateReport, isGeneratingReport, insight })
           </button>
         </div>
         <DataSourceBadge text="Generated online with Ollama" tone="ai" />
-        <AIInsightPanel insight={insight} />
+        <AIInsightPanel insight={insight} loading={loading} />
         <div className="list-stack">
           {reports.map((report, index) => (
             <article key={`${report.created_at || report.generated_at}-${index}`} className="list-card">
@@ -883,10 +945,10 @@ function AskPage({ sessionId, messages, chatInput, setChatInput, submitChatMessa
                 <details className="technical-details">
                   <summary>Technical Details</summary>
                   <div className="technical-grid">
-                    <span>AI Source</span><strong>{message.meta.ai_source || message.meta.provider || "Ollama"}</strong>
+                    <span>AI Source</span><strong>{isVerifiedOllamaResponse(message.meta) ? "Ollama" : "Not generated by Ollama"}</strong>
                     <span>Model</span><strong>{message.meta.model}</strong>
-                    <span>LLM Used</span><strong>{message.meta.llm_used ? "Yes" : "No"}</strong>
-                    <span>Generated At</span><strong>{formatGeneratedAt(message.meta.generated_at)}</strong>
+                    <span>LLM Used</span><strong>{isVerifiedOllamaResponse(message.meta) ? "Yes" : "No"}</strong>
+                    <span>Generated At</span><strong>{isVerifiedOllamaResponse(message.meta) ? formatGeneratedAt(message.meta.generated_at) : "Unavailable"}</strong>
                     <span>Agent</span><strong>{message.meta.selected_agent}</strong>
                     <span>Tools</span><strong>{message.meta.tools_called?.length ? message.meta.tools_called.join(", ") : "None"}</strong>
                     <span>Response Time</span><strong>{formatter.format(message.meta.response_time_ms ?? 0)} ms</strong>

@@ -47,6 +47,16 @@ def rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def _normalize_ai_generation_event(event: dict[str, Any]) -> dict[str, Any]:
+    event["llm_used"] = bool(event.get("llm_used"))
+    response = event.get("response")
+    if event.get("status") == "success" and not (str(response).strip() if response is not None else ""):
+        event["status"] = "failed"
+        event["llm_used"] = False
+        event["error_message"] = event.get("error_message") or "Ollama returned an empty response."
+    return event
+
+
 def initialize_database() -> None:
     """Create AskMamma demo data, memory, tracing, and document tables."""
 
@@ -455,7 +465,7 @@ def log_ai_generation_event(
         ).fetchone()
     event = dict(row) if row else {}
     if event:
-        event["llm_used"] = bool(event["llm_used"])
+        event = _normalize_ai_generation_event(event)
     return event
 
 
@@ -474,9 +484,7 @@ def list_ai_generation_events(limit: int = 50, feature_name: str | None = None) 
     with get_connection() as connection:
         rows = connection.execute(query, params).fetchall()
     events = rows_to_dicts(rows)
-    for event in events:
-        event["llm_used"] = bool(event["llm_used"])
-    return events
+    return [_normalize_ai_generation_event(event) for event in events]
 
 
 if __name__ == "__main__":

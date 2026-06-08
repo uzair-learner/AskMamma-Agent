@@ -1,4 +1,5 @@
 from agents.orchestrator import get_session_messages, invoke_agent
+from core import config
 from core.llm_provider import LLM_UNAVAILABLE_MESSAGE
 from rag.retrieval import document_search, reindex_documents
 from scripts.seed_data import seed
@@ -66,9 +67,9 @@ def test_returns_clear_message_when_llm_unavailable(monkeypatch):
         "current_runtime_status",
         lambda: {
             "provider": "Ollama",
-            "model": "llama3.2:latest",
+            "model": config.OLLAMA_MODEL,
             "llm_used": False,
-            "ollama_base_url": "http://localhost:11434",
+            "ollama_base_url": config.OLLAMA_BASE_URL,
             "ollama_reachable": False,
         },
     )

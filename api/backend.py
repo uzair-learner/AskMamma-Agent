@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
@@ -22,7 +23,12 @@ from askmamma.tools import (
     tool_registry,
 )
 from core import config
-from core.llm_provider import LLM_UNAVAILABLE_MESSAGE, current_runtime_status, get_llm_provider
+from core.llm_provider import (
+    LLM_UNAVAILABLE_MESSAGE,
+    current_runtime_status,
+    get_llm_provider,
+    validate_ollama_configuration,
+)
 from core.observability import configure_langsmith, safe_error_message
 from db.database import (
     create_product,
@@ -52,6 +58,7 @@ app = FastAPI(
     ),
     version="2.0.0",
 )
+LOGGER = logging.getLogger(__name__)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.CORS_ORIGINS,
@@ -124,6 +131,16 @@ class MCPRpcPayload(BaseModel):
 def startup() -> None:
     initialize_database()
     configure_langsmith()
+    if config.LLM_PROVIDER == "ollama":
+        diagnostics = validate_ollama_configuration()
+        LOGGER.info(
+            "Startup Ollama validation provider=%s base_url=%s configured_model=%s installed_models=%s model_available=%s",
+            config.LLM_PROVIDER,
+            diagnostics["ollama_base_url"],
+            diagnostics["configured_model"],
+            diagnostics["installed_ollama_models"],
+            diagnostics["model_available"],
+        )
 
 
 def _enforce_rate_limit(key: str) -> None:
@@ -228,6 +245,8 @@ def _generate_ai_content(
 
     try:
         response = get_llm_provider().generate(prompt)
+        if not str(response).strip():
+            raise RuntimeError("Ollama returned an empty response.")
         if track_event:
             log_ai_generation_event(
                 feature_name=feature_name,
@@ -582,10 +601,15 @@ def admin_diagnostics() -> dict[str, Any]:
     ai_events = list_ai_generation_events(20)
     return {
         "provider": runtime["provider"],
+        "configured_model": runtime.get("configured_model", runtime["model"]),
+        "active_model": runtime.get("active_model"),
         "model": runtime["model"],
         "ollama_base_url": runtime["ollama_base_url"],
         "ollama_reachable": runtime["ollama_reachable"],
+        "installed_ollama_models": runtime.get("installed_ollama_models", []),
+        "model_available": runtime.get("model_available", False),
         "runtime_error": runtime.get("runtime_error"),
+        "last_error": runtime.get("last_error"),
         "recent_requests": recent_requests,
         "ai_events": ai_events,
     }

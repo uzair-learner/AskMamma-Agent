@@ -35,6 +35,26 @@ function Test-HttpReady {
     }
 }
 
+function Import-DotEnv {
+    param([string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        return
+    }
+
+    Get-Content $Path | ForEach-Object {
+        $line = $_.Trim()
+        if (-not $line -or $line.StartsWith("#") -or -not $line.Contains("=")) {
+            return
+        }
+
+        $parts = $line.Split("=", 2)
+        $name = $parts[0].Trim()
+        $value = $parts[1].Trim().Trim('"').Trim("'")
+        Set-Item -Path "Env:$name" -Value $value
+    }
+}
+
 Set-Location $projectRoot
 
 if (-not (Test-VenvHealthy -PathToPython $pythonExe -PathToActivate $activateScript)) {
@@ -77,6 +97,11 @@ if (-not (Test-Path $envFile) -and (Test-Path $envExample)) {
     Write-Host "Creating .env from .env.example..."
     Copy-Item -LiteralPath $envExample -Destination $envFile
 }
+
+Import-DotEnv -Path $envFile
+Write-Host "Loaded LLM_PROVIDER=$env:LLM_PROVIDER"
+Write-Host "Loaded OLLAMA_BASE_URL=$env:OLLAMA_BASE_URL"
+Write-Host "Loaded OLLAMA_MODEL=$env:OLLAMA_MODEL"
 
 Write-Host "Seeding demo data and document index..."
 & $pythonExe scripts/seed_data.py
