@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
@@ -70,6 +71,8 @@ app.add_middleware(
 RATE_LIMIT_BUCKETS: dict[str, deque[float]] = defaultdict(deque)
 FRONTEND_DIST_DIR = config.ROOT_DIR / "frontend" / "dist"
 TASK_STORE: dict[str, dict[str, Any]] = {}
+AI_CONTENT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+AI_CONTENT_CACHE_TTL_SECONDS = 15 * 60
 AI_UNAVAILABLE_MESSAGE = "Ollama is unavailable. AI content was not generated."
 REPORT_UNAVAILABLE_MESSAGE = "Ollama is unavailable. Report was not generated."
 
@@ -194,6 +197,27 @@ def _ai_payload(
     }
 
 
+def _ai_cache_key(feature_name: str, content_key: str, prompt: str) -> str:
+    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    return f"{feature_name}:{content_key}:{digest}"
+
+
+def _cached_ai_content(feature_name: str, content_key: str, prompt: str) -> dict[str, Any] | None:
+    cached = AI_CONTENT_CACHE.get(_ai_cache_key(feature_name, content_key, prompt))
+    if not cached:
+        return None
+    cached_at, payload = cached
+    if time.time() - cached_at > AI_CONTENT_CACHE_TTL_SECONDS:
+        AI_CONTENT_CACHE.pop(_ai_cache_key(feature_name, content_key, prompt), None)
+        return None
+    return dict(payload)
+
+
+def _cache_ai_content(feature_name: str, content_key: str, prompt: str, payload: dict[str, Any]) -> None:
+    if payload.get("llm_used") and payload.get(content_key):
+        AI_CONTENT_CACHE[_ai_cache_key(feature_name, content_key, prompt)] = (time.time(), dict(payload))
+
+
 def _generate_ai_content(
     *,
     feature_name: str,
@@ -202,6 +226,10 @@ def _generate_ai_content(
     unavailable_message: str,
     track_event: bool = True,
 ) -> dict[str, Any]:
+    cached_payload = _cached_ai_content(feature_name, content_key, prompt)
+    if cached_payload:
+        return cached_payload
+
     generated_at = utcnow()
     provider = "Ollama"
     model = config.OLLAMA_MODEL
@@ -258,7 +286,7 @@ def _generate_ai_content(
                 created_at=generated_at,
                 status="success",
             )
-        return {
+        payload = {
             content_key: response,
             **_ai_payload(
                 provider=provider,
@@ -268,6 +296,8 @@ def _generate_ai_content(
                 status="success",
             ),
         }
+        _cache_ai_content(feature_name, content_key, prompt, payload)
+        return payload
     except Exception as exc:
         error_message = safe_error_message(exc)
         if track_event:
@@ -320,6 +350,19 @@ def _ai_explanation_message(
     )
 
 
+def _compact_product(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sku": item.get("sku"),
+        "name": item.get("name"),
+        "category": item.get("category"),
+        "supplier": item.get("supplier_name") or item.get("supplier"),
+        "stock": item.get("stock_quantity") or item.get("current_stock"),
+        "threshold": item.get("reorder_level"),
+        "recommended_quantity": item.get("recommended_quantity"),
+        "reason": item.get("reason"),
+    }
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "environment": config.APP_ENV}
@@ -360,8 +403,8 @@ def ai_products_insight(filter: str = "all", product_id: int | None = None) -> d
     selected = get_product(product_id) if product_id else (products[0] if products else None)
     payload = {
         "filter": filter,
-        "selected_product": selected,
-        "visible_products_sample": products[:8],
+        "selected_product": _compact_product(selected) if selected else None,
+        "visible_products_sample": [_compact_product(item) for item in products[:5]],
         "high_demand_names": sorted(high_demand_names),
     }
     prompt = (
@@ -427,11 +470,16 @@ def demo_recommendations_reorder() -> list[dict[str, Any]]:
 
 @app.get("/ai/insights/forecasts")
 def ai_forecasts_insight() -> dict[str, Any]:
-    recommendations = demo_reorder_recommendations()[:8]
+    recommendations = demo_reorder_recommendations()[:5]
     top_forecast = demo_forecast(recommendations[0]["sku"], months=6) if recommendations else demo_forecast(months=6)
     payload = {
-        "recommendations": recommendations,
-        "forecast_example": top_forecast,
+        "recommendations": [_compact_product(item) for item in recommendations],
+        "forecast_example": {
+            "sku": top_forecast.get("sku"),
+            "name": top_forecast.get("name"),
+            "months": top_forecast.get("months"),
+            "forecast": top_forecast.get("forecast")[:3] if isinstance(top_forecast.get("forecast"), list) else top_forecast.get("forecast"),
+        },
     }
     prompt = (
         "You are explaining forecast results for an operations page. Use only the provided JSON. "
@@ -444,11 +492,16 @@ def ai_forecasts_insight() -> dict[str, Any]:
 
 @app.get("/forecast/ai-explanation")
 def forecast_ai_explanation() -> dict[str, Any]:
-    recommendations = demo_reorder_recommendations()[:8]
+    recommendations = demo_reorder_recommendations()[:5]
     top_forecast = demo_forecast(recommendations[0]["sku"], months=6) if recommendations else demo_forecast(months=6)
     payload = {
-        "recommendations": recommendations,
-        "forecast_example": top_forecast,
+        "recommendations": [_compact_product(item) for item in recommendations],
+        "forecast_example": {
+            "sku": top_forecast.get("sku"),
+            "name": top_forecast.get("name"),
+            "months": top_forecast.get("months"),
+            "forecast": top_forecast.get("forecast")[:3] if isinstance(top_forecast.get("forecast"), list) else top_forecast.get("forecast"),
+        },
     }
     prompt = (
         "You are explaining forecast results for an operations page. Use only the provided JSON. "
@@ -461,7 +514,7 @@ def forecast_ai_explanation() -> dict[str, Any]:
 
 @app.get("/ai/insights/reorder")
 def ai_reorder_insight() -> dict[str, Any]:
-    recommendations = demo_reorder_recommendations()[:10]
+    recommendations = [_compact_product(item) for item in demo_reorder_recommendations()[:5]]
     prompt = (
         "You are explaining reorder recommendations. Use only the provided JSON. "
         "Prioritize the biggest reorder risks and explain why these items should be reordered. "
@@ -473,7 +526,7 @@ def ai_reorder_insight() -> dict[str, Any]:
 
 @app.get("/reorder/ai-explanation")
 def reorder_ai_explanation() -> dict[str, Any]:
-    recommendations = demo_reorder_recommendations()[:10]
+    recommendations = [_compact_product(item) for item in demo_reorder_recommendations()[:5]]
     prompt = (
         "You are explaining reorder recommendations. Use only the provided JSON. "
         "Explain why each item should be reordered, identify the highest priority reorder item, "
@@ -485,7 +538,16 @@ def reorder_ai_explanation() -> dict[str, Any]:
 
 @app.get("/ai/insights/suppliers")
 def ai_suppliers_insight() -> dict[str, Any]:
-    suppliers = list_suppliers()[:10]
+    suppliers = [
+        {
+            "name": supplier.get("name"),
+            "product_count": supplier.get("product_count"),
+            "low_stock_count": supplier.get("low_stock_count"),
+            "out_of_stock_count": supplier.get("out_of_stock_count"),
+            "lead_time_days": supplier.get("lead_time_days"),
+        }
+        for supplier in list_suppliers()[:6]
+    ]
     prompt = (
         "You are explaining supplier performance and risk. Use only the provided JSON. "
         "Summarize the biggest supplier risks, especially low-stock exposure and out-of-stock exposure. "
@@ -725,19 +787,33 @@ def reports_askmamma() -> dict[str, Any]:
     forecast = demo_forecast(months=6)
     suppliers = list_suppliers()
     products = list_products(limit=200)
+    low_stock = [item for item in products if item["stock_quantity"] > 0 and item["stock_quantity"] <= item["reorder_level"]]
+    out_of_stock = [item for item in products if item["stock_quantity"] <= 0]
     payload = {
         "dashboard": dashboard,
-        "forecast": forecast,
-        "reorder_recommendations": recommendations,
-        "high_demand_products": dashboard.get("predicted_high_demand_products", []),
-        "low_stock_products": [item for item in products if item["stock_quantity"] > 0 and item["stock_quantity"] <= item["reorder_level"]],
-        "out_of_stock_products": [item for item in products if item["stock_quantity"] <= 0],
-        "suppliers": suppliers,
+        "forecast": {
+            "sku": forecast.get("sku"),
+            "name": forecast.get("name"),
+            "forecast": forecast.get("forecast")[:3] if isinstance(forecast.get("forecast"), list) else forecast.get("forecast"),
+        },
+        "reorder_recommendations": [_compact_product(item) for item in recommendations[:6]],
+        "high_demand_products": [_compact_product(item) for item in dashboard.get("predicted_high_demand_products", [])[:5]],
+        "low_stock_products": [_compact_product(item) for item in low_stock[:6]],
+        "out_of_stock_products": [_compact_product(item) for item in out_of_stock[:6]],
+        "suppliers": [
+            {
+                "name": supplier.get("name"),
+                "product_count": supplier.get("product_count"),
+                "low_stock_count": supplier.get("low_stock_count"),
+                "out_of_stock_count": supplier.get("out_of_stock_count"),
+                "lead_time_days": supplier.get("lead_time_days"),
+            }
+            for supplier in suppliers[:6]
+        ],
     }
     prompt = (
         "You are writing an online inventory operations report. Use only the provided JSON. "
-        "Write a concise report with sections for dashboard summary, forecast risks, reorder priorities, "
-        "high-demand products, stock risks, supplier risks, and recommended next actions. "
+        "Write a concise report with sections for dashboard summary, forecast risks, reorder priorities, stock risks, supplier risks, and next actions. "
         "Do not invent any data.\n\n"
         f"{json.dumps(payload, default=str)}"
     )
@@ -756,11 +832,22 @@ def reports_askmamma() -> dict[str, Any]:
 
 @app.get("/ai/insights/reports")
 def ai_reports_insight() -> dict[str, Any]:
+    recommendations = demo_reorder_recommendations()
+    suppliers = list_suppliers()
     payload = {
         "dashboard": dashboard_stats(),
-        "recommendations": demo_reorder_recommendations()[:8],
-        "suppliers": list_suppliers()[:8],
-        "reports": _online_reports_snapshot(5),
+        "recommendations": [_compact_product(item) for item in recommendations[:5]],
+        "suppliers": [
+            {
+                "name": supplier.get("name"),
+                "product_count": supplier.get("product_count"),
+                "low_stock_count": supplier.get("low_stock_count"),
+                "out_of_stock_count": supplier.get("out_of_stock_count"),
+                "lead_time_days": supplier.get("lead_time_days"),
+            }
+            for supplier in suppliers[:5]
+        ],
+        "reports_count": len(_online_reports_snapshot(20)),
     }
     prompt = (
         "You are writing a concise executive-style report summary. Use only the provided JSON. "

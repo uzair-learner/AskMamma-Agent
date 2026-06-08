@@ -198,61 +198,24 @@ class OllamaProvider:
         )
         try:
             url = f"{config.OLLAMA_BASE_URL.rstrip('/')}/api/generate"
-            # Try common payload shapes used by different Ollama releases.
-            payloads = [
-                {"model": model_name, "input": prompt, "stream": False},
-                {"model": model_name, "prompt": prompt, "stream": False},
-                {"model": model_name, "text": prompt, "stream": False},
-            ]
-            last_exc: Exception | None = None
-            for payload in payloads:
-                try:
-                    response = requests.post(url, json=payload, timeout=30)
-                    response.raise_for_status()
-                    data = response.json()
-                    # Common response shapes: {"response": "..."} or {"result": {"output": "..."}} or list
-                    if isinstance(data, dict):
-                        if "response" in data:
-                            return str(data.get("response", "")).strip()
-                        if "result" in data and isinstance(data["result"], dict):
-                            out = data["result"].get("output") or data["result"].get("response")
-                            if out:
-                                return str(out).strip()
-                        # Some versions return {"outputs": [{"content": "..."}]}
-                        outputs = data.get("outputs")
-                        if outputs and isinstance(outputs, list) and outputs:
-                            first = outputs[0]
-                            if isinstance(first, dict):
-                                txt = first.get("content") or first.get("output") or first.get("response")
-                                if txt:
-                                    return str(txt).strip()
-                    elif isinstance(data, list) and data:
-                        # maybe a list of message dicts
-                        first = data[0]
-                        if isinstance(first, dict):
-                            txt = first.get("response") or first.get("output") or first.get("content")
-                            if txt:
-                                return str(txt).strip()
-                    # Return the raw text body if the response shape is unexpected.
-                    text = response.text.strip()
-                    if text:
-                        LOGGER.info("Ollama request succeeded selected_model=%s", model_name)
-                        return text
-                except Exception as exc:
-                    last_exc = exc
-                    continue
-            runtime_error = _chat_model_runtime_error()
-            if runtime_error:
-                LOGGER.error("Ollama request failed selected_model=%s error=%s", model_name, runtime_error)
-                raise RuntimeError(runtime_error) from last_exc
-            LOGGER.error(
-                "Ollama request failed selected_model=%s error=%s",
-                model_name,
-                f"Unable to get a response from Ollama model {config.OLLAMA_MODEL} at {config.OLLAMA_BASE_URL}",
-            )
-            raise RuntimeError(
-                f"Unable to get a response from Ollama model {config.OLLAMA_MODEL} at {config.OLLAMA_BASE_URL}"
-            ) from last_exc
+            timeout_seconds = max(60, config.AGENT_TIMEOUT_SECONDS)
+            payload = {
+                "model": model_name,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0,
+                    "num_predict": 160,
+                },
+            }
+            response = requests.post(url, json=payload, timeout=timeout_seconds)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict):
+                response_text = str(data.get("response", "")).strip()
+                if response_text:
+                    return response_text
+            raise RuntimeError("Ollama returned an empty response.")
         except requests.RequestException as exc:
             runtime_error = _chat_model_runtime_error()
             if runtime_error:
@@ -434,13 +397,13 @@ def _create_ollama_chat_model() -> Any:
 
     model_name = resolve_ollama_model_name()
     try:
-        return ChatOllama(model=model_name, temperature=0, base_url=config.OLLAMA_BASE_URL)
+        return ChatOllama(model=model_name, temperature=0, base_url=config.OLLAMA_BASE_URL, num_predict=180)
     except TypeError:
         try:
-            return ChatOllama(model=model_name, base_url=config.OLLAMA_BASE_URL)
+            return ChatOllama(model=model_name, base_url=config.OLLAMA_BASE_URL, num_predict=180)
         except TypeError:
             try:
-                return ChatOllama(model=model_name, temperature=0)
+                return ChatOllama(model=model_name, temperature=0, num_predict=180)
             except Exception as exc:
                 raise RuntimeError(
                     f"Unable to create ChatOllama for model {model_name} at {config.OLLAMA_BASE_URL}. Error: {exc}"
