@@ -588,7 +588,7 @@ def reorder_requests_update(
 def ai_forecasts_insight(user: dict[str, Any] | None = Depends(optional_current_user)) -> dict[str, Any]:
     tenant_id = _tenant_from_user(user)
     recommendations = demo_reorder_recommendations(tenant_id=tenant_id)[:5]
-    top_forecast = demo_forecast(recommendations[0]["sku"], months=6) if recommendations else demo_forecast(months=6)
+    top_forecast = demo_forecast(recommendations[0]["sku"], months=6, tenant_id=tenant_id) if recommendations else demo_forecast(months=6, tenant_id=tenant_id)
     payload = {
         "recommendations": [_compact_product(item) for item in recommendations],
         "forecast_example": {
@@ -611,7 +611,7 @@ def ai_forecasts_insight(user: dict[str, Any] | None = Depends(optional_current_
 def forecast_ai_explanation(user: dict[str, Any] | None = Depends(optional_current_user)) -> dict[str, Any]:
     tenant_id = _tenant_from_user(user)
     recommendations = demo_reorder_recommendations(tenant_id=tenant_id)[:5]
-    top_forecast = demo_forecast(recommendations[0]["sku"], months=6) if recommendations else demo_forecast(months=6)
+    top_forecast = demo_forecast(recommendations[0]["sku"], months=6, tenant_id=tenant_id) if recommendations else demo_forecast(months=6, tenant_id=tenant_id)
     payload = {
         "recommendations": [_compact_product(item) for item in recommendations],
         "forecast_example": {

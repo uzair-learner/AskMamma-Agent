@@ -6,6 +6,7 @@ import os
 import json
 import secrets
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from datetime import timedelta
@@ -21,6 +22,8 @@ load_dotenv()
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DB_PATH = ROOT_DIR / "askmamma.db"
+_INITIALIZE_LOCK = threading.Lock()
+_DATABASE_INITIALIZED = False
 
 
 def _db_path_from_env() -> Path:
@@ -38,7 +41,7 @@ def utc_now() -> str:
 def get_connection() -> Iterator[sqlite3.Connection]:
     db_path = _db_path_from_env()
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(db_path)
+    connection = sqlite3.connect(db_path, timeout=30)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     try:
@@ -128,10 +131,18 @@ def _normalize_ai_generation_event(event: dict[str, Any]) -> dict[str, Any]:
 def initialize_database() -> None:
     """Create AskMamma demo data, memory, tracing, and document tables."""
 
-    with get_connection() as connection:
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS suppliers (
+    global _DATABASE_INITIALIZED
+    if _DATABASE_INITIALIZED:
+        return
+
+    with _INITIALIZE_LOCK:
+        if _DATABASE_INITIALIZED:
+            return
+
+        with get_connection() as connection:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS suppliers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 tenant_id INTEGER NOT NULL DEFAULT 1,
                 name TEXT NOT NULL,
@@ -325,14 +336,18 @@ def initialize_database() -> None:
                 FOREIGN KEY (supplier_id) REFERENCES suppliers(id),
                 FOREIGN KEY (requested_by_user_id) REFERENCES users(id)
             );
-            """
-        )
-        for table in TENANT_TABLES:
-            _add_column_if_missing(connection, table, "tenant_id", "INTEGER NOT NULL DEFAULT 1")
-        _seed_demo_security(connection)
+                """
+            )
+            for table in TENANT_TABLES:
+                _add_column_if_missing(connection, table, "tenant_id", "INTEGER NOT NULL DEFAULT 1")
+            _seed_demo_security(connection)
+        _DATABASE_INITIALIZED = True
 
 
 def reset_database() -> None:
+    global _DATABASE_INITIALIZED
+    with _INITIALIZE_LOCK:
+        _DATABASE_INITIALIZED = False
     with get_connection() as connection:
         connection.execute("PRAGMA foreign_keys = OFF")
         rows = connection.execute(

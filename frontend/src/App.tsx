@@ -179,6 +179,14 @@ async function request(path, options = {}) {
   return response.json();
 }
 
+async function loadDataPart(label, path, fallback) {
+  try {
+    return { label, ok: true, data: await request(path) };
+  } catch (error) {
+    return { label, ok: false, data: fallback, error };
+  }
+}
+
 export default function App() {
   const [sessionId] = useState(getSessionId);
   const [authToken, setAuthToken] = useState(() => window.sessionStorage.getItem(AUTH_STORAGE_KEY) ?? "");
@@ -226,18 +234,23 @@ export default function App() {
     return () => window.removeEventListener("hashchange", syncRoute);
   }, []);
 
-  async function loadAllData() {
+  async function loadAllData(user = currentUser) {
+    const results = await Promise.all([
+      loadDataPart("health", "/health", { status: "unavailable", environment: "..." }),
+      loadDataPart("dashboard", "/dashboard", null),
+      loadDataPart("products", "/demo/items?limit=100", []),
+      loadDataPart("suppliers", "/demo/suppliers", []),
+      loadDataPart("reorder recommendations", "/demo/recommendations/reorder", []),
+      loadDataPart("reports", "/reports", []),
+      can(user, "reorder:read")
+        ? loadDataPart("reorder requests", "/reorder/requests", [])
+        : Promise.resolve({ label: "reorder requests", ok: true, data: [] }),
+      can(user, "admin:read")
+        ? loadDataPart("admin diagnostics", "/admin/diagnostics", null)
+        : Promise.resolve({ label: "admin diagnostics", ok: true, data: null }),
+    ]);
     const [healthData, dashboardData, productData, supplierData, recommendationData, reportData, reorderRequestData, diagnosticsData] =
-      await Promise.all([
-        request("/health"),
-        request("/dashboard"),
-        request("/demo/items?limit=100"),
-        request("/demo/suppliers"),
-        request("/demo/recommendations/reorder"),
-        request("/reports"),
-        can(currentUser, "reorder:read") ? request("/reorder/requests") : Promise.resolve([]),
-        can(currentUser, "admin:read") ? request("/admin/diagnostics") : Promise.resolve(null),
-      ]);
+      results.map((result) => result.data);
 
     startTransition(() => {
       setHealth(healthData);
@@ -250,13 +263,22 @@ export default function App() {
       setDiagnostics(diagnosticsData);
       setSelectedProductId((current) => current ?? productData[0]?.id ?? null);
     });
+
+    const failed = results.filter((result) => !result.ok);
+    if (failed.length) {
+      throw new Error(
+        failed
+          .map((result) => `${result.label}: ${result.error instanceof Error ? result.error.message : "Request failed"}`)
+          .join("; "),
+      );
+    }
   }
 
   useEffect(() => {
-    if (authToken) {
+    if (authToken && currentUser) {
       loadAllData().catch((loadError) => setError(loadError.message));
     }
-  }, [authToken]);
+  }, [authToken, currentUser?.id, currentUser?.role]);
 
   async function handleLogin(event) {
     event.preventDefault();
@@ -268,8 +290,8 @@ export default function App() {
       });
       window.sessionStorage.setItem(AUTH_STORAGE_KEY, result.access_token);
       window.sessionStorage.setItem(USER_STORAGE_KEY, JSON.stringify(result.user));
-      setAuthToken(result.access_token);
       setCurrentUser(result.user);
+      setAuthToken(result.access_token);
     } catch (loginFailure) {
       setLoginError(loginFailure.message);
     }
