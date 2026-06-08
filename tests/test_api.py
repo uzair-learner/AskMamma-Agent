@@ -2,7 +2,6 @@ from fastapi.testclient import TestClient
 
 from api.backend import app
 from core import config
-from core.llm_provider import LLM_UNAVAILABLE_MESSAGE
 from scripts.seed_data import seed
 
 
@@ -11,6 +10,12 @@ def setup_module():
 
 
 client = TestClient(app)
+
+
+def auth_headers(username: str = "admin@example.com", password: str = "AdminPass123!") -> dict[str, str]:
+    response = client.post("/auth/login", json={"username": username, "password": password})
+    assert response.status_code == 200
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
 def test_health_endpoint():
@@ -45,6 +50,7 @@ def test_chat_endpoint_returns_graph_steps():
     response = client.post(
         "/agent/chat",
         json={"message": "In the sample demo catalog, which items are low in availability?", "session_id": "api-test"},
+        headers=auth_headers(),
     )
     assert response.status_code == 200
     payload = response.json()
@@ -60,7 +66,8 @@ def test_chat_endpoint_returns_graph_steps():
 
 
 def test_mcp_rpc_list_and_call():
-    list_response = client.post("/mcp/rpc", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
+    headers = auth_headers()
+    list_response = client.post("/mcp/rpc", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}, headers=headers)
     assert list_response.status_code == 200
     assert list_response.json()["result"]
 
@@ -72,6 +79,7 @@ def test_mcp_rpc_list_and_call():
             "method": "tools/call",
             "params": {"name": "DemoAvailabilityTool", "arguments": {"identifier": "Copy Paper"}},
         },
+        headers=headers,
     )
     assert call_response.status_code == 200
     assert call_response.json()["result"]["found"] is True
@@ -81,6 +89,7 @@ def test_agent_tasks_endpoint():
     response = client.post(
         "/agent/tasks",
         json={"task_id": "task-123", "message": "Generate a short AskMamma report.", "metadata": {"source": "test"}},
+        headers=auth_headers(),
     )
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
@@ -95,15 +104,16 @@ def test_agent_tasks_polling_endpoint():
     client.post(
         "/agent/tasks",
         json={"task_id": "task-lookup", "message": "Which sample demo items are low in availability?"},
+        headers=auth_headers(),
     )
-    response = client.get("/agent/tasks/task-lookup")
+    response = client.get("/agent/tasks/task-lookup", headers=auth_headers())
     assert response.status_code == 200
     assert response.json()["task_id"] == "task-lookup"
     assert response.json()["status"] == "completed"
 
 
 def test_stock_movement_requires_confirmation():
-    response = client.post("/demo/availability/restock", json={"product_id": 1, "quantity": 2, "reason": "demo"})
+    response = client.post("/demo/availability/restock", json={"product_id": 1, "quantity": 2, "reason": "demo"}, headers=auth_headers())
     assert response.status_code == 400
 
 
@@ -127,8 +137,9 @@ def test_admin_diagnostics_endpoint():
     client.post(
         "/agent/chat",
         json={"message": "Which sample demo items are low in availability?", "session_id": "diagnostics-test"},
+        headers=auth_headers(),
     )
-    response = client.get("/admin/diagnostics")
+    response = client.get("/admin/diagnostics", headers=auth_headers())
     assert response.status_code == 200
     payload = response.json()
     assert "provider" in payload
@@ -161,15 +172,16 @@ def test_chat_endpoint_returns_clear_message_when_llm_unavailable(monkeypatch):
     response = client.post(
         "/agent/chat",
         json={"message": "Which sample demo items are low in availability?", "session_id": "api-llm-unavailable"},
+        headers=auth_headers(),
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["answer"] == LLM_UNAVAILABLE_MESSAGE
+    assert payload["answer"] == "Ollama is unavailable. AI content was not generated."
     assert payload["llm_used"] is False
 
 
 def test_reports_endpoint_returns_excel_download():
-    response = client.get("/reports/askmamma")
+    response = client.get("/reports/askmamma", headers=auth_headers())
     assert response.status_code == 200
     payload = response.json()
     assert payload["title"] == "Inventory Pilot AI Online Report"
@@ -181,7 +193,7 @@ def test_reports_endpoint_returns_excel_download():
 
 
 def test_reports_list_returns_excel_entries():
-    client.get("/reports/askmamma")
+    client.get("/reports/askmamma", headers=auth_headers())
     response = client.get("/reports")
     assert response.status_code == 200
     payload = response.json()

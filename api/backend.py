@@ -11,11 +11,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
+from api.auth import router as auth_router
+from api.dependencies import get_current_user, optional_current_user, require_permission
 from askmamma.tools import (
     add_demo_movement,
     demo_forecast,
@@ -60,6 +62,7 @@ app = FastAPI(
     version="2.0.0",
 )
 LOGGER = logging.getLogger(__name__)
+app.include_router(auth_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.CORS_ORIGINS,
@@ -161,6 +164,10 @@ def _request_key(request: Request, suffix: str) -> str:
     return f"{client}:{suffix}"
 
 
+def _tenant_from_user(user: dict[str, Any] | None) -> int | None:
+    return int(user["tenant_id"]) if user else None
+
+
 def _orchestrator():
     from agents import orchestrator
 
@@ -173,8 +180,8 @@ def _rag():
     return retrieval
 
 
-def _online_reports_snapshot(limit: int = 20) -> list[dict[str, Any]]:
-    return list_ai_generation_events(limit=limit, feature_name="online_report")
+def _online_reports_snapshot(limit: int = 20, tenant_id: int | None = None) -> list[dict[str, Any]]:
+    return list_ai_generation_events(limit=limit, feature_name="online_report", tenant_id=tenant_id)
 
 
 def _ai_payload(
@@ -225,6 +232,7 @@ def _generate_ai_content(
     content_key: str,
     unavailable_message: str,
     track_event: bool = True,
+    tenant_id: int | None = None,
 ) -> dict[str, Any]:
     cached_payload = _cached_ai_content(feature_name, content_key, prompt)
     if cached_payload:
@@ -258,6 +266,7 @@ def _generate_ai_content(
                 created_at=generated_at,
                 status="failed",
                 error_message=error_message,
+                tenant_id=tenant_id,
             )
         return {
             content_key: unavailable_message,
@@ -285,6 +294,7 @@ def _generate_ai_content(
                 response=response,
                 created_at=generated_at,
                 status="success",
+                tenant_id=tenant_id,
             )
         payload = {
             content_key: response,
@@ -311,6 +321,7 @@ def _generate_ai_content(
                 created_at=generated_at,
                 status="failed",
                 error_message=error_message,
+                tenant_id=tenant_id,
             )
         return {
             content_key: unavailable_message,
@@ -325,13 +336,14 @@ def _generate_ai_content(
         }
 
 
-def _ai_message(prompt: str) -> dict[str, Any]:
+def _ai_message(prompt: str, tenant_id: int | None = None) -> dict[str, Any]:
     return _generate_ai_content(
         feature_name="insight",
         prompt=prompt,
         content_key="message",
         unavailable_message=AI_UNAVAILABLE_MESSAGE,
         track_event=False,
+        tenant_id=tenant_id,
     )
 
 
@@ -340,6 +352,7 @@ def _ai_explanation_message(
     *,
     feature_name: str,
     unavailable_message: str = AI_UNAVAILABLE_MESSAGE,
+    tenant_id: int | None = None,
 ) -> dict[str, Any]:
     return _generate_ai_content(
         feature_name=feature_name,
@@ -347,6 +360,7 @@ def _ai_explanation_message(
         content_key="ai_explanation",
         unavailable_message=unavailable_message,
         track_event=True,
+        tenant_id=tenant_id,
     )
 
 
@@ -369,38 +383,49 @@ def health() -> dict[str, str]:
 
 
 @app.get("/dashboard")
-def dashboard() -> dict[str, Any]:
-    return dashboard_stats()
+def dashboard(user: dict[str, Any] | None = Depends(optional_current_user)) -> dict[str, Any]:
+    return dashboard_stats(_tenant_from_user(user))
 
 
 @app.get("/ai/insights/dashboard")
-def ai_dashboard_insight() -> dict[str, Any]:
-    data = dashboard_stats()
+def ai_dashboard_insight(user: dict[str, Any] | None = Depends(optional_current_user)) -> dict[str, Any]:
+    tenant_id = _tenant_from_user(user)
+    data = dashboard_stats(tenant_id)
     prompt = (
         "You are explaining an operations dashboard. Use only the provided JSON. "
         "Do not invent any numbers. Give a concise plain-English summary of stock pressure, "
         "high-demand signals, and the biggest operational risk in 3 short bullets.\n\n"
         f"{json.dumps(data, default=str)}"
     )
-    return _ai_message(prompt)
+    return _ai_message(prompt, tenant_id=tenant_id)
 
 
 @app.get("/demo/items", summary="List sample demo items")
-def demo_items(search: str | None = None, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
-    return list_products(search=search, limit=limit, offset=offset)
+def demo_items(
+    search: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+    user: dict[str, Any] | None = Depends(optional_current_user),
+) -> list[dict[str, Any]]:
+    return list_products(search=search, limit=limit, offset=offset, tenant_id=_tenant_from_user(user))
 
 
 @app.get("/ai/insights/products")
-def ai_products_insight(filter: str = "all", product_id: int | None = None) -> dict[str, Any]:
-    products = list_products(limit=100)
-    high_demand_names = {item["name"] for item in dashboard_stats().get("predicted_high_demand_products", [])}
+def ai_products_insight(
+    filter: str = "all",
+    product_id: int | None = None,
+    user: dict[str, Any] | None = Depends(optional_current_user),
+) -> dict[str, Any]:
+    tenant_id = _tenant_from_user(user)
+    products = list_products(limit=100, tenant_id=tenant_id)
+    high_demand_names = {item["name"] for item in dashboard_stats(tenant_id).get("predicted_high_demand_products", [])}
     if filter == "low-stock":
         products = [item for item in products if item["stock_quantity"] > 0 and item["stock_quantity"] <= item["reorder_level"]]
     elif filter == "out-of-stock":
         products = [item for item in products if item["stock_quantity"] <= 0]
     elif filter == "high-demand":
         products = [item for item in products if item["name"] in high_demand_names]
-    selected = get_product(product_id) if product_id else (products[0] if products else None)
+    selected = get_product(product_id, tenant_id) if product_id else (products[0] if products else None)
     payload = {
         "filter": filter,
         "selected_product": _compact_product(selected) if selected else None,
@@ -413,64 +438,65 @@ def ai_products_insight(filter: str = "all", product_id: int | None = None) -> d
         "If the item is low on stock or unusual, explain the risk briefly. Keep it to 3 short bullets.\n\n"
         f"{json.dumps(payload, default=str)}"
     )
-    return _ai_message(prompt)
+    return _ai_message(prompt, tenant_id=tenant_id)
 
 
 @app.get("/demo/items/{item_id}", summary="Get one sample demo item")
-def demo_item(item_id: int) -> dict[str, Any]:
-    item = get_product(item_id)
+def demo_item(item_id: int, user: dict[str, Any] | None = Depends(optional_current_user)) -> dict[str, Any]:
+    item = get_product(item_id, _tenant_from_user(user))
     if not item:
         raise HTTPException(status_code=404, detail="Demo item not found")
     return item
 
 
 @app.post("/demo/items", summary="Create a sample demo item")
-def demo_item_create(payload: DemoItemPayload) -> dict[str, Any]:
+def demo_item_create(payload: DemoItemPayload, user: dict[str, Any] = Depends(require_permission("inventory:write"))) -> dict[str, Any]:
     if not payload.confirm:
         raise HTTPException(status_code=400, detail="Set confirm=true to create or overwrite demo item data.")
-    return create_product(payload.model_dump(exclude={"confirm"}))
+    return create_product(payload.model_dump(exclude={"confirm"}), tenant_id=int(user["tenant_id"]))
 
 
 @app.put("/demo/items/{item_id}", summary="Update a sample demo item")
-def demo_item_update(item_id: int, payload: DemoItemPayload) -> dict[str, Any]:
+def demo_item_update(item_id: int, payload: DemoItemPayload, user: dict[str, Any] = Depends(require_permission("inventory:write"))) -> dict[str, Any]:
     if not payload.confirm:
         raise HTTPException(status_code=400, detail="Set confirm=true to update demo item data.")
-    item = update_product(item_id, payload.model_dump(exclude={"confirm"}))
+    item = update_product(item_id, payload.model_dump(exclude={"confirm"}), tenant_id=int(user["tenant_id"]))
     if not item:
         raise HTTPException(status_code=404, detail="Demo item not found")
     return item
 
 
 @app.delete("/demo/items/{item_id}", summary="Delete a sample demo item")
-def demo_item_delete(item_id: int, confirm: bool = False) -> dict[str, Any]:
+def demo_item_delete(item_id: int, confirm: bool = False, user: dict[str, Any] = Depends(require_permission("inventory:write"))) -> dict[str, Any]:
     if not confirm:
         raise HTTPException(status_code=400, detail="Set confirm=true to delete a demo item.")
-    return {"deleted": delete_product(item_id)}
+    return {"deleted": delete_product(item_id, tenant_id=int(user["tenant_id"]))}
 
 
 @app.get("/demo/availability/low", summary="List low-availability sample demo items")
-def demo_availability_low() -> list[dict[str, Any]]:
-    return low_stock_products()
+def demo_availability_low(user: dict[str, Any] | None = Depends(optional_current_user)) -> list[dict[str, Any]]:
+    return low_stock_products(_tenant_from_user(user))
 
 
 @app.get("/demo/availability/out", summary="List unavailable sample demo items")
-def demo_availability_out() -> list[dict[str, Any]]:
-    return out_of_stock_products()
+def demo_availability_out(user: dict[str, Any] | None = Depends(optional_current_user)) -> list[dict[str, Any]]:
+    return out_of_stock_products(_tenant_from_user(user))
 
 
 @app.get("/demo/suppliers", summary="List sample demo suppliers")
-def demo_suppliers() -> list[dict[str, Any]]:
-    return list_suppliers()
+def demo_suppliers(user: dict[str, Any] | None = Depends(optional_current_user)) -> list[dict[str, Any]]:
+    return list_suppliers(_tenant_from_user(user))
 
 
 @app.get("/demo/recommendations/reorder", summary="List sample demo reorder recommendations")
-def demo_recommendations_reorder() -> list[dict[str, Any]]:
-    return demo_reorder_recommendations()
+def demo_recommendations_reorder(user: dict[str, Any] | None = Depends(optional_current_user)) -> list[dict[str, Any]]:
+    return demo_reorder_recommendations(tenant_id=_tenant_from_user(user))
 
 
 @app.get("/ai/insights/forecasts")
-def ai_forecasts_insight() -> dict[str, Any]:
-    recommendations = demo_reorder_recommendations()[:5]
+def ai_forecasts_insight(user: dict[str, Any] | None = Depends(optional_current_user)) -> dict[str, Any]:
+    tenant_id = _tenant_from_user(user)
+    recommendations = demo_reorder_recommendations(tenant_id=tenant_id)[:5]
     top_forecast = demo_forecast(recommendations[0]["sku"], months=6) if recommendations else demo_forecast(months=6)
     payload = {
         "recommendations": [_compact_product(item) for item in recommendations],
@@ -487,12 +513,13 @@ def ai_forecasts_insight() -> dict[str, Any]:
         "and what the team should watch next. Keep it concise.\n\n"
         f"{json.dumps(payload, default=str)}"
     )
-    return _ai_message(prompt)
+    return _ai_message(prompt, tenant_id=tenant_id)
 
 
 @app.get("/forecast/ai-explanation")
-def forecast_ai_explanation() -> dict[str, Any]:
-    recommendations = demo_reorder_recommendations()[:5]
+def forecast_ai_explanation(user: dict[str, Any] | None = Depends(optional_current_user)) -> dict[str, Any]:
+    tenant_id = _tenant_from_user(user)
+    recommendations = demo_reorder_recommendations(tenant_id=tenant_id)[:5]
     top_forecast = demo_forecast(recommendations[0]["sku"], months=6) if recommendations else demo_forecast(months=6)
     payload = {
         "recommendations": [_compact_product(item) for item in recommendations],
@@ -509,35 +536,38 @@ def forecast_ai_explanation() -> dict[str, Any]:
         "which items may need attention soon, and give a concise forecast summary.\n\n"
         f"{json.dumps(payload, default=str)}"
     )
-    return _ai_explanation_message(prompt, feature_name="forecast_explanation")
+    return _ai_explanation_message(prompt, feature_name="forecast_explanation", tenant_id=tenant_id)
 
 
 @app.get("/ai/insights/reorder")
-def ai_reorder_insight() -> dict[str, Any]:
-    recommendations = [_compact_product(item) for item in demo_reorder_recommendations()[:5]]
+def ai_reorder_insight(user: dict[str, Any] | None = Depends(optional_current_user)) -> dict[str, Any]:
+    tenant_id = _tenant_from_user(user)
+    recommendations = [_compact_product(item) for item in demo_reorder_recommendations(tenant_id=tenant_id)[:5]]
     prompt = (
         "You are explaining reorder recommendations. Use only the provided JSON. "
         "Prioritize the biggest reorder risks and explain why these items should be reordered. "
         "Keep it short and operational.\n\n"
         f"{json.dumps(recommendations, default=str)}"
     )
-    return _ai_message(prompt)
+    return _ai_message(prompt, tenant_id=tenant_id)
 
 
 @app.get("/reorder/ai-explanation")
-def reorder_ai_explanation() -> dict[str, Any]:
-    recommendations = [_compact_product(item) for item in demo_reorder_recommendations()[:5]]
+def reorder_ai_explanation(user: dict[str, Any] | None = Depends(optional_current_user)) -> dict[str, Any]:
+    tenant_id = _tenant_from_user(user)
+    recommendations = [_compact_product(item) for item in demo_reorder_recommendations(tenant_id=tenant_id)[:5]]
     prompt = (
         "You are explaining reorder recommendations. Use only the provided JSON. "
         "Explain why each item should be reordered, identify the highest priority reorder item, "
         "describe the risk if reorder is delayed, and give a concise purchase recommendation.\n\n"
         f"{json.dumps(recommendations, default=str)}"
     )
-    return _ai_explanation_message(prompt, feature_name="reorder_explanation")
+    return _ai_explanation_message(prompt, feature_name="reorder_explanation", tenant_id=tenant_id)
 
 
 @app.get("/ai/insights/suppliers")
-def ai_suppliers_insight() -> dict[str, Any]:
+def ai_suppliers_insight(user: dict[str, Any] | None = Depends(optional_current_user)) -> dict[str, Any]:
+    tenant_id = _tenant_from_user(user)
     suppliers = [
         {
             "name": supplier.get("name"),
@@ -546,7 +576,7 @@ def ai_suppliers_insight() -> dict[str, Any]:
             "out_of_stock_count": supplier.get("out_of_stock_count"),
             "lead_time_days": supplier.get("lead_time_days"),
         }
-        for supplier in list_suppliers()[:6]
+        for supplier in list_suppliers(tenant_id)[:6]
     ]
     prompt = (
         "You are explaining supplier performance and risk. Use only the provided JSON. "
@@ -554,24 +584,24 @@ def ai_suppliers_insight() -> dict[str, Any]:
         "Keep it to 3 short bullets.\n\n"
         f"{json.dumps(suppliers, default=str)}"
     )
-    return _ai_message(prompt)
+    return _ai_message(prompt, tenant_id=tenant_id)
 
 
 @app.post("/demo/availability/restock", summary="Record sample demo availability replenishment")
-def demo_availability_restock(payload: DemoAvailabilityPayload) -> dict[str, Any]:
+def demo_availability_restock(payload: DemoAvailabilityPayload, user: dict[str, Any] = Depends(require_permission("inventory:write"))) -> dict[str, Any]:
     try:
-        return add_demo_movement(payload.product_id, "stock_in", payload.quantity, payload.reason, payload.confirm)
+        return add_demo_movement(payload.product_id, "stock_in", payload.quantity, payload.reason, payload.confirm, tenant_id=int(user["tenant_id"]))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=safe_error_message(exc)) from exc
 
 
 @app.post("/demo/forecast", summary="Run a sample demo forecast")
-def demo_forecast_run(payload: DemoForecastPayload) -> dict[str, Any]:
-    return demo_forecast(payload.identifier, payload.months)
+def demo_forecast_run(payload: DemoForecastPayload, user: dict[str, Any] | None = Depends(optional_current_user)) -> dict[str, Any]:
+    return demo_forecast(payload.identifier, payload.months, tenant_id=_tenant_from_user(user))
 
 
 @app.post("/agent/chat")
-def agent_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
+def agent_chat(payload: ChatPayload, request: Request, user: dict[str, Any] = Depends(require_permission("ai:chat"))) -> dict[str, Any]:
     _enforce_rate_limit(_request_key(request, "agent-chat"))
     result = _orchestrator().invoke_agent(payload.message, payload.session_id)
     generated_at = utcnow()
@@ -585,6 +615,7 @@ def agent_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
             response=result.get("answer"),
             created_at=generated_at,
             status="success",
+            tenant_id=int(user["tenant_id"]),
         )
         return {
             **result,
@@ -608,6 +639,7 @@ def agent_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
         created_at=generated_at,
         status="failed",
         error_message=error_message,
+        tenant_id=int(user["tenant_id"]),
     )
     return {
         **result,
@@ -624,18 +656,18 @@ def agent_chat(payload: ChatPayload, request: Request) -> dict[str, Any]:
 
 
 @app.post("/agent/run-task")
-def agent_run_task(payload: ChatPayload, request: Request) -> dict[str, Any]:
+def agent_run_task(payload: ChatPayload, request: Request, user: dict[str, Any] = Depends(require_permission("ai:chat"))) -> dict[str, Any]:
     _enforce_rate_limit(_request_key(request, "agent-run-task"))
     return _orchestrator().invoke_agent(payload.message, payload.session_id)
 
 
 @app.get("/agent/sessions/{session_id}")
-def agent_session(session_id: str) -> dict[str, Any]:
+def agent_session(session_id: str, user: dict[str, Any] = Depends(require_permission("ai:chat"))) -> dict[str, Any]:
     return {"session_id": session_id, "messages": _orchestrator().get_session_messages(session_id, limit=100)}
 
 
 @app.get("/agent/traces")
-def agent_traces(limit: int = 50) -> list[dict[str, Any]]:
+def agent_traces(limit: int = 50, user: dict[str, Any] = Depends(require_permission("admin:read"))) -> list[dict[str, Any]]:
     return _orchestrator().get_recent_traces(limit)
 
 
@@ -645,7 +677,7 @@ def agent_graph() -> dict[str, Any]:
 
 
 @app.get("/admin/diagnostics")
-def admin_diagnostics() -> dict[str, Any]:
+def admin_diagnostics(user: dict[str, Any] = Depends(require_permission("admin:read"))) -> dict[str, Any]:
     try:
         runtime = current_runtime_status()
     except Exception as exc:
@@ -710,7 +742,7 @@ def mcp_metadata() -> dict[str, Any]:
 
 
 @app.post("/mcp/rpc")
-def mcp_rpc(payload: MCPRpcPayload, request: Request) -> dict[str, Any]:
+def mcp_rpc(payload: MCPRpcPayload, request: Request, user: dict[str, Any] = Depends(require_permission("ai:chat"))) -> dict[str, Any]:
     _enforce_rate_limit(_request_key(request, "mcp-rpc"))
     try:
         return handle_rpc(payload.method, payload.id, payload.params)
@@ -719,7 +751,7 @@ def mcp_rpc(payload: MCPRpcPayload, request: Request) -> dict[str, Any]:
 
 
 @app.post("/agent/tasks")
-def agent_tasks(payload: TaskPayload, request: Request) -> dict[str, Any]:
+def agent_tasks(payload: TaskPayload, request: Request, user: dict[str, Any] = Depends(require_permission("ai:chat"))) -> dict[str, Any]:
     _enforce_rate_limit(_request_key(request, "agent-tasks"))
     TASK_STORE[payload.task_id] = create_task_record(payload.task_id, payload.message, payload.metadata, payload.from_agent)
     TASK_STORE[payload.task_id]["status"] = "running"
@@ -741,7 +773,7 @@ def agent_tasks(payload: TaskPayload, request: Request) -> dict[str, Any]:
 
 
 @app.get("/agent/tasks/{task_id}")
-def agent_task_status(task_id: str) -> dict[str, Any]:
+def agent_task_status(task_id: str, user: dict[str, Any] = Depends(require_permission("ai:chat"))) -> dict[str, Any]:
     task = TASK_STORE.get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
@@ -749,10 +781,10 @@ def agent_task_status(task_id: str) -> dict[str, Any]:
 
 
 @app.post("/documents/upload")
-async def documents_upload(file: UploadFile = File(...)) -> dict[str, Any]:
+async def documents_upload(file: UploadFile = File(...), user: dict[str, Any] = Depends(require_permission("document:write"))) -> dict[str, Any]:
     content = await file.read()
     try:
-        return _rag().save_uploaded_document(file.filename or "upload.txt", content)
+        return _rag().save_uploaded_document(file.filename or "upload.txt", content, tenant_id=int(user["tenant_id"]))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=safe_error_message(exc)) from exc
     except RuntimeError as exc:
@@ -760,7 +792,7 @@ async def documents_upload(file: UploadFile = File(...)) -> dict[str, Any]:
 
 
 @app.post("/documents/reindex")
-def documents_reindex() -> dict[str, Any]:
+def documents_reindex(user: dict[str, Any] = Depends(require_permission("document:write"))) -> dict[str, Any]:
     try:
         return _rag().reindex_documents()
     except RuntimeError as exc:
@@ -768,25 +800,26 @@ def documents_reindex() -> dict[str, Any]:
 
 
 @app.post("/documents/search")
-def documents_search(payload: DocumentSearchPayload) -> dict[str, Any]:
+def documents_search(payload: DocumentSearchPayload, user: dict[str, Any] = Depends(require_permission("document:read"))) -> dict[str, Any]:
     try:
-        return _rag().document_search(payload.query, payload.limit)
+        return _rag().document_search(payload.query, payload.limit, tenant_id=int(user["tenant_id"]))
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=safe_error_message(exc)) from exc
 
 
 @app.get("/reports/demo", summary="Generate a sample demo report")
-def reports_demo() -> dict[str, Any]:
-    return reports_askmamma()
+def reports_demo(user: dict[str, Any] = Depends(require_permission("report:write"))) -> dict[str, Any]:
+    return reports_askmamma(user)
 
 
 @app.get("/reports/askmamma")
-def reports_askmamma() -> dict[str, Any]:
-    dashboard = dashboard_stats()
-    recommendations = demo_reorder_recommendations()
-    forecast = demo_forecast(months=6)
-    suppliers = list_suppliers()
-    products = list_products(limit=200)
+def reports_askmamma(user: dict[str, Any] = Depends(require_permission("report:write"))) -> dict[str, Any]:
+    tenant_id = int(user["tenant_id"])
+    dashboard = dashboard_stats(tenant_id)
+    recommendations = demo_reorder_recommendations(tenant_id=tenant_id)
+    forecast = demo_forecast(months=6, tenant_id=tenant_id)
+    suppliers = list_suppliers(tenant_id)
+    products = list_products(limit=200, tenant_id=tenant_id)
     low_stock = [item for item in products if item["stock_quantity"] > 0 and item["stock_quantity"] <= item["reorder_level"]]
     out_of_stock = [item for item in products if item["stock_quantity"] <= 0]
     payload = {
@@ -823,6 +856,7 @@ def reports_askmamma() -> dict[str, Any]:
         content_key="report_content",
         unavailable_message=REPORT_UNAVAILABLE_MESSAGE,
         track_event=True,
+        tenant_id=tenant_id,
     )
     return {
         **report,
@@ -831,11 +865,12 @@ def reports_askmamma() -> dict[str, Any]:
 
 
 @app.get("/ai/insights/reports")
-def ai_reports_insight() -> dict[str, Any]:
-    recommendations = demo_reorder_recommendations()
-    suppliers = list_suppliers()
+def ai_reports_insight(user: dict[str, Any] | None = Depends(optional_current_user)) -> dict[str, Any]:
+    tenant_id = _tenant_from_user(user)
+    recommendations = demo_reorder_recommendations(tenant_id=tenant_id)
+    suppliers = list_suppliers(tenant_id)
     payload = {
-        "dashboard": dashboard_stats(),
+        "dashboard": dashboard_stats(tenant_id),
         "recommendations": [_compact_product(item) for item in recommendations[:5]],
         "suppliers": [
             {
@@ -854,7 +889,7 @@ def ai_reports_insight() -> dict[str, Any]:
         "Summarize the main inventory risks, supplier issues, and report-ready talking points in 3 short bullets.\n\n"
         f"{json.dumps(payload, default=str)}"
     )
-    return _ai_message(prompt)
+    return _ai_message(prompt, tenant_id=tenant_id)
 
 
 @app.get("/reports/demo-forecast", summary="Generate a sample demo forecast snapshot")
@@ -863,8 +898,8 @@ def reports_demo_forecast() -> dict[str, Any]:
 
 
 @app.get("/reports")
-def reports_list() -> list[dict[str, Any]]:
-    return _online_reports_snapshot()
+def reports_list(user: dict[str, Any] | None = Depends(optional_current_user)) -> list[dict[str, Any]]:
+    return _online_reports_snapshot(tenant_id=_tenant_from_user(user))
 
 
 @app.get("/.well-known/agent-card.json")

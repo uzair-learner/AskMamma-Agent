@@ -11,7 +11,7 @@ def classify_route(message: str) -> str:
         return "document"
     if any(word in lowered for word in ["forecast", "demand", "trend", "reorder", "next month", "history"]):
         return "forecast"
-    if any(word in lowered for word in ["research", "compare", "benchmark", "best practice", "interview"]):
+    if any(word in lowered for word in ["research", "compare", "benchmark", "best practice", "interview", "architecture", "agent flow", "orchestration"]):
         return "research"
     if any(word in lowered for word in ["report", "summary", "markdown", "json", "txt"]):
         return "report"

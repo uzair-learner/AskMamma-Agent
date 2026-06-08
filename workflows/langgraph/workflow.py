@@ -8,6 +8,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, TypedDict
 
 from langchain.agents import create_agent
@@ -352,7 +353,53 @@ def document_node(state: GraphState) -> GraphState:
 
 
 def research_node(state: GraphState) -> GraphState:
-    raise RuntimeError("ResearchAgent requires an explicit implementation.")
+    query = state["user_input"].lower()
+    root = Path(__file__).resolve().parents[2]
+    candidates = [
+        root / "README.md",
+        root / "ARCHITECTURE.md",
+        root / "SECURITY.md",
+        root / "docs" / "architecture-diagram.md",
+        root / "docs" / "agent-diagram.md",
+        root / "docs" / "workflow-diagram.md",
+        root / "docs" / "interview-guide.md",
+    ]
+    keywords = [word for word in re.findall(r"[a-z0-9]+", query) if len(word) > 3]
+    evidence: list[str] = []
+    for path in candidates:
+        if not path.exists():
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        matches = [
+            line
+            for line in lines
+            if not keywords or any(keyword in line.lower() for keyword in keywords)
+        ][:5]
+        if matches:
+            evidence.append(f"{path.relative_to(root)}:\n" + "\n".join(f"- {match}" for match in matches))
+    if not evidence:
+        catalog = "\n".join(f"- {name}: {definition.description}" for name, definition in AGENT_CATALOG.items())
+        evidence.append("Agent catalog:\n" + catalog)
+    answer = (
+        "ResearchAgent is limited to internal project knowledge in this demo. "
+        "Here is the relevant local evidence:\n\n"
+        + "\n\n".join(evidence[:4])
+    )
+    return {
+        "selected_agent": "ResearchAgent",
+        "answer": answer,
+        "route_path": _append_route(state, "ResearchAgent"),
+        "intermediate_steps": _append_step(
+            state,
+            {"agent": "ResearchAgent", "sources": [entry.split(":", 1)[0] for entry in evidence[:4]]},
+        ),
+        "tools_called": list(state.get("tools_called", [])),
+        "tool_outputs": [*state.get("tool_outputs", []), {"research_sources": len(evidence)}],
+        "provider": state.get("provider", ""),
+        "model": state.get("model", ""),
+        "llm_used": state.get("llm_used", False),
+    }
 
 
 def report_node(state: GraphState) -> GraphState:

@@ -2,6 +2,8 @@ import { startTransition, useEffect, useMemo, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const SESSION_STORAGE_KEY = "askmamma-session-id";
+const AUTH_STORAGE_KEY = "inventory-pilot-auth-token";
+const USER_STORAGE_KEY = "inventory-pilot-auth-user";
 
 const formatter = new Intl.NumberFormat("en-US");
 const currencyFormatter = new Intl.NumberFormat("en-US", {
@@ -28,6 +30,17 @@ const navigationItems = [
   { label: "AI Architecture", route: "architecture" },
   { label: "Admin", route: "admin" },
 ];
+
+const rolePermissions = {
+  admin: new Set(["admin:read", "report:write"]),
+  manager: new Set(["report:write"]),
+  analyst: new Set([]),
+  viewer: new Set([]),
+};
+
+function can(user, permission) {
+  return rolePermissions[user?.role]?.has(permission) ?? false;
+}
 
 const dashboardCardConfig = [
   ["All Products", "products", {}, "blue", "Browse the full sample catalog, search items, and inspect product details.", "View all products"],
@@ -83,9 +96,11 @@ function isVerifiedOllamaResponse(meta) {
 }
 
 async function request(path, options = {}) {
+  const token = window.sessionStorage.getItem(AUTH_STORAGE_KEY);
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.headers ?? {}),
     },
     ...options,
@@ -107,6 +122,13 @@ async function request(path, options = {}) {
 
 export default function App() {
   const [sessionId] = useState(getSessionId);
+  const [authToken, setAuthToken] = useState(() => window.sessionStorage.getItem(AUTH_STORAGE_KEY) ?? "");
+  const [currentUser, setCurrentUser] = useState(() => {
+    const stored = window.sessionStorage.getItem(USER_STORAGE_KEY);
+    return stored ? JSON.parse(stored) : null;
+  });
+  const [loginForm, setLoginForm] = useState({ username: "admin@example.com", password: "AdminPass123!" });
+  const [loginError, setLoginError] = useState("");
   const [routeState, setRouteState] = useState(parseHash);
   const [health, setHealth] = useState({ status: "loading", environment: "..." });
   const [dashboard, setDashboard] = useState(null);
@@ -153,7 +175,7 @@ export default function App() {
         request("/demo/suppliers"),
         request("/demo/recommendations/reorder"),
         request("/reports"),
-        request("/admin/diagnostics"),
+        can(currentUser, "admin:read") ? request("/admin/diagnostics") : Promise.resolve(null),
       ]);
 
     startTransition(() => {
@@ -169,8 +191,42 @@ export default function App() {
   }
 
   useEffect(() => {
-    loadAllData().catch((loadError) => setError(loadError.message));
-  }, []);
+    if (authToken) {
+      loadAllData().catch((loadError) => setError(loadError.message));
+    }
+  }, [authToken]);
+
+  async function handleLogin(event) {
+    event.preventDefault();
+    setLoginError("");
+    try {
+      const result = await request("/auth/login", {
+        method: "POST",
+        body: JSON.stringify(loginForm),
+      });
+      window.sessionStorage.setItem(AUTH_STORAGE_KEY, result.access_token);
+      window.sessionStorage.setItem(USER_STORAGE_KEY, JSON.stringify(result.user));
+      setAuthToken(result.access_token);
+      setCurrentUser(result.user);
+    } catch (loginFailure) {
+      setLoginError(loginFailure.message);
+    }
+  }
+
+  function handleLogout() {
+    window.sessionStorage.removeItem(AUTH_STORAGE_KEY);
+    window.sessionStorage.removeItem(USER_STORAGE_KEY);
+    setAuthToken("");
+    setCurrentUser(null);
+    setMessages([
+      {
+        id: "welcome",
+        role: "assistant",
+        content:
+          "Welcome to Inventory Pilot AI. Ask about inventory, forecasting, reorder recommendations, suppliers, reports, or documents.",
+      },
+    ]);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -403,6 +459,17 @@ export default function App() {
       }[card.title] ?? "--",
   }));
 
+  if (!authToken || !currentUser) {
+    return (
+      <LoginScreen
+        loginForm={loginForm}
+        setLoginForm={setLoginForm}
+        loginError={loginError}
+        onLogin={handleLogin}
+      />
+    );
+  }
+
   return (
     <div className="workspace-shell">
       <div className="ambient ambient-left" />
@@ -415,7 +482,9 @@ export default function App() {
           <p>Move by business category instead of hunting through a big table first.</p>
         </div>
         <nav className="sidebar-nav">
-          {navigationItems.map((item) => {
+          {navigationItems
+            .filter((item) => item.route !== "admin" || can(currentUser, "admin:read"))
+            .map((item) => {
             const isActive =
               routeState.route === item.route &&
               (!item.params?.filter || routeState.params.filter === item.params.filter);
@@ -428,7 +497,7 @@ export default function App() {
                 {item.label}
               </button>
             );
-          })}
+            })}
         </nav>
         <div className="sidebar-footer">
           <span className={`status-pill ${health.status === "ok" ? "status-ok" : "status-waiting"}`}>
@@ -445,12 +514,20 @@ export default function App() {
             <h2>{pageTitle(routeState)}</h2>
           </div>
           <div className="topbar-actions">
+            <span className="session-pill">
+              {currentUser.role} | {currentUser.tenant_slug}
+            </span>
+            <button className="ghost-button" onClick={handleLogout}>
+              Logout
+            </button>
             <button className="secondary-button" onClick={refreshAll} disabled={isRefreshing}>
               {isRefreshing ? "Refreshing..." : "Refresh live data"}
             </button>
-            <button className="ghost-button" onClick={handleGenerateReport} disabled={isGeneratingReport}>
-              {isGeneratingReport ? "Generating..." : "Generate report"}
-            </button>
+            {can(currentUser, "report:write") ? (
+              <button className="ghost-button" onClick={handleGenerateReport} disabled={isGeneratingReport}>
+                {isGeneratingReport ? "Generating..." : "Generate report"}
+              </button>
+            ) : null}
             <button className="primary-button" onClick={() => navigateTo("ask")}>
               Inventory Pilot AI Assistant
             </button>
@@ -499,6 +576,7 @@ export default function App() {
             reports={reports}
             onGenerateReport={handleGenerateReport}
             isGeneratingReport={isGeneratingReport}
+            canGenerateReport={can(currentUser, "report:write")}
             insight={pageInsight}
             loading={pageInsightLoading}
           />
@@ -517,6 +595,43 @@ export default function App() {
         {routeState.route === "admin" ? <AdminPage diagnostics={diagnostics} /> : null}
       </main>
     </div>
+  );
+}
+
+function LoginScreen({ loginForm, setLoginForm, loginError, onLogin }) {
+  return (
+    <main className="login-shell">
+      <section className="panel login-panel">
+        <div>
+          <p className="section-label">Inventory Pilot AI</p>
+          <h1>Sign in</h1>
+        </div>
+        <form className="composer" onSubmit={onLogin}>
+          <input
+            className="search-input"
+            value={loginForm.username}
+            onChange={(event) => setLoginForm((current) => ({ ...current, username: event.target.value }))}
+            placeholder="Username"
+            autoComplete="username"
+          />
+          <input
+            className="search-input"
+            type="password"
+            value={loginForm.password}
+            onChange={(event) => setLoginForm((current) => ({ ...current, password: event.target.value }))}
+            placeholder="Password"
+            autoComplete="current-password"
+          />
+          {loginError ? <div className="error-banner">{loginError}</div> : null}
+          <button className="primary-button" type="submit">
+            Login
+          </button>
+        </form>
+        <div className="info-banner">
+          Demo users: admin@example.com, manager@example.com, analyst@example.com, viewer@example.com
+        </div>
+      </section>
+    </main>
   );
 }
 
@@ -879,7 +994,7 @@ function SuppliersPage({ suppliers, insight, loading }) {
   );
 }
 
-function ReportsPage({ reports, onGenerateReport, isGeneratingReport, insight, loading }) {
+function ReportsPage({ reports, onGenerateReport, isGeneratingReport, canGenerateReport, insight, loading }) {
   return (
     <div className="page-grid">
       <section className="panel">
@@ -888,9 +1003,11 @@ function ReportsPage({ reports, onGenerateReport, isGeneratingReport, insight, l
             <p className="section-label">Reports</p>
             <h3>Online reports</h3>
           </div>
-          <button className="primary-button" onClick={onGenerateReport} disabled={isGeneratingReport}>
-            {isGeneratingReport ? "Generating..." : "Generate new report"}
-          </button>
+          {canGenerateReport ? (
+            <button className="primary-button" onClick={onGenerateReport} disabled={isGeneratingReport}>
+              {isGeneratingReport ? "Generating..." : "Generate new report"}
+            </button>
+          ) : null}
         </div>
         <DataSourceBadge text="Generated online with Ollama" tone="ai" />
         <AIInsightPanel insight={insight} loading={loading} />

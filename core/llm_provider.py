@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import math
+import re
 from dataclasses import dataclass
 from importlib.util import find_spec
 import logging
@@ -335,6 +338,39 @@ class AzureOpenAIEmbeddingProvider:
         )
 
 
+class LocalHashEmbeddings(Embeddings):
+    """Deterministic local embeddings for demo/test RAG without external credentials."""
+
+    dimensions = 128
+
+    def _embed(self, text: str) -> list[float]:
+        vector = [0.0] * self.dimensions
+        tokens = re.findall(r"[A-Za-z0-9]+", text.lower())
+        for token in tokens:
+            digest = hashlib.sha256(token.encode("utf-8")).digest()
+            index = int.from_bytes(digest[:4], "big") % self.dimensions
+            vector[index] += 1.0
+        norm = math.sqrt(sum(value * value for value in vector)) or 1.0
+        return [value / norm for value in vector]
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self._embed(text) for text in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed(text)
+
+
+@dataclass
+class LocalHashEmbeddingProvider:
+    name: str = "local-hash"
+
+    def available(self) -> bool:
+        return True
+
+    def embeddings(self) -> Embeddings:
+        return LocalHashEmbeddings()
+
+
 def get_llm_provider() -> LLMProvider:
     if config.LLM_PROVIDER == "openai":
         return OpenAIProvider()
@@ -472,7 +508,7 @@ def get_embedding_provider() -> EmbeddingProvider | None:
     if azure_provider.available():
         return azure_provider
 
-    return None
+    return LocalHashEmbeddingProvider()
 
 
 def current_runtime_status() -> dict[str, Any]:

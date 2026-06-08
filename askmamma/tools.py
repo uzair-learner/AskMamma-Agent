@@ -82,17 +82,17 @@ class AuditLogInput(BaseModel):
     message: str = Field(..., min_length=1, max_length=1000)
 
 
-def demo_item_lookup(query: str) -> list[dict[str, Any]]:
-    return list_products(search=query, limit=25)
+def demo_item_lookup(query: str, tenant_id: int | None = None) -> list[dict[str, Any]]:
+    return list_products(search=query, limit=25, tenant_id=tenant_id)
 
 
-def demo_item_search(query: str) -> list[dict[str, Any]]:
-    return demo_item_lookup(query)
+def demo_item_search(query: str, tenant_id: int | None = None) -> list[dict[str, Any]]:
+    return demo_item_lookup(query, tenant_id=tenant_id)
 
 
-def demo_status(identifier: str | None = None) -> dict[str, Any]:
+def demo_status(identifier: str | None = None, tenant_id: int | None = None) -> dict[str, Any]:
     if identifier:
-        item = find_product(identifier)
+        item = find_product(identifier, tenant_id=tenant_id)
         if not item:
             return {"found": False, "message": f"No sample demo item found for `{identifier}`."}
         return {
@@ -103,13 +103,13 @@ def demo_status(identifier: str | None = None) -> dict[str, Any]:
         }
     return {
         "found": True,
-        "low_stock": low_stock_products(),
-        "out_of_stock": out_of_stock_products(),
+        "low_stock": low_stock_products(tenant_id=tenant_id),
+        "out_of_stock": out_of_stock_products(tenant_id=tenant_id),
     }
 
 
-def demo_partner_lookup(identifier: str) -> dict[str, Any]:
-    item = find_product(identifier)
+def demo_partner_lookup(identifier: str, tenant_id: int | None = None) -> dict[str, Any]:
+    item = find_product(identifier, tenant_id=tenant_id)
     if not item:
         return {"found": False, "message": f"No sample demo item found for `{identifier}`."}
     return {
@@ -123,16 +123,20 @@ def demo_partner_lookup(identifier: str) -> dict[str, Any]:
     }
 
 
-def demo_history(identifier: str | None = None, months: int = 6) -> dict[str, Any]:
+def demo_history(identifier: str | None = None, months: int = 6, tenant_id: int | None = None) -> dict[str, Any]:
     params: list[Any] = [f"-{months * 30} days"]
     product_clause = ""
     item = None
     if identifier:
-        item = find_product(identifier)
+        item = find_product(identifier, tenant_id=tenant_id)
         if not item:
             return {"found": False, "message": f"No sample demo item found for `{identifier}`."}
         product_clause = "AND s.product_id = ?"
         params.append(item["id"])
+    tenant_clause = ""
+    if tenant_id is not None:
+        tenant_clause = "AND s.tenant_id = ?"
+        params.append(tenant_id)
 
     with get_connection() as connection:
         rows = connection.execute(
@@ -142,6 +146,7 @@ def demo_history(identifier: str | None = None, months: int = 6) -> dict[str, An
             JOIN products p ON p.id = s.product_id
             WHERE date(s.sale_date) >= date('now', ?)
             {product_clause}
+            {tenant_clause}
             ORDER BY s.sale_date
             """,
             params,
@@ -150,8 +155,8 @@ def demo_history(identifier: str | None = None, months: int = 6) -> dict[str, An
     return {"found": bool(records), "item": item, "records": records}
 
 
-def demo_forecast(identifier: str | None = None, months: int = 6) -> dict[str, Any]:
-    history = demo_history(identifier, months)
+def demo_forecast(identifier: str | None = None, months: int = 6, tenant_id: int | None = None) -> dict[str, Any]:
+    history = demo_history(identifier, months, tenant_id=tenant_id)
     if not history.get("found"):
         return {
             "found": False,
@@ -184,10 +189,10 @@ def demo_forecast(identifier: str | None = None, months: int = 6) -> dict[str, A
         product_id = history.get("item", {}).get("id") if history.get("item") else None
         connection.execute(
             """
-            INSERT INTO forecasts (product_id, category, forecast_period, predicted_quantity, method, explanation, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO forecasts (tenant_id, product_id, category, forecast_period, predicted_quantity, method, explanation, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (product_id, None, "next_month", prediction, method, explanation, utc_now()),
+            (tenant_id or 1, product_id, None, "next_month", prediction, method, explanation, utc_now()),
         )
     return {
         "found": True,
@@ -199,13 +204,13 @@ def demo_forecast(identifier: str | None = None, months: int = 6) -> dict[str, A
     }
 
 
-def demo_reorder_recommendations(identifier: str | None = None) -> list[dict[str, Any]]:
-    products = [find_product(identifier)] if identifier else low_stock_products() + out_of_stock_products()
+def demo_reorder_recommendations(identifier: str | None = None, tenant_id: int | None = None) -> list[dict[str, Any]]:
+    products = [find_product(identifier, tenant_id=tenant_id)] if identifier else low_stock_products(tenant_id=tenant_id) + out_of_stock_products(tenant_id=tenant_id)
     recommendations: list[dict[str, Any]] = []
     for item in [product for product in products if product]:
-        forecast = demo_forecast(item["sku"], months=6)
-        predicted = forecast.get("predicted_quantity", 0) if forecast.get("found") else item["reorder_quantity"]
-        target = max(item["reorder_quantity"], int(predicted) + item["reorder_level"])
+        # Keep the page/API path fast. Detailed forecast endpoints can still run
+        # demo_forecast; the reorder list uses deterministic stock policy.
+        target = max(item["reorder_quantity"], item["reorder_level"] * 2)
         needed = max(0, target - item["stock_quantity"])
         recommendations.append(
             {
@@ -228,6 +233,7 @@ def add_demo_movement(
     quantity: int,
     reason: str = "",
     confirm: bool = False,
+    tenant_id: int | None = None,
 ) -> dict[str, Any]:
     if not confirm:
         raise ValueError("Human confirmation is required before writing a demo movement.")
@@ -235,7 +241,7 @@ def add_demo_movement(
         raise ValueError("movement_type must be stock_in, stock_out, or adjustment")
     if quantity <= 0:
         raise ValueError("quantity must be positive")
-    item = get_product(product_id)
+    item = get_product(product_id, tenant_id=tenant_id)
     if not item:
         raise ValueError(f"Demo item {product_id} not found")
 
@@ -246,16 +252,17 @@ def add_demo_movement(
     with get_connection() as connection:
         connection.execute(
             """
-            INSERT INTO inventory_movements (product_id, movement_type, quantity, reason, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO inventory_movements (tenant_id, product_id, movement_type, quantity, reason, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (product_id, movement_type, quantity, reason, utc_now()),
+            (tenant_id or item.get("tenant_id") or 1, product_id, movement_type, quantity, reason, utc_now()),
         )
         connection.execute(
-            "UPDATE products SET stock_quantity = stock_quantity + ?, updated_at = ? WHERE id = ?",
-            (delta, utc_now(), product_id),
+            "UPDATE products SET stock_quantity = stock_quantity + ?, updated_at = ? WHERE id = ?"
+            + (" AND tenant_id = ?" if tenant_id is not None else ""),
+            [delta, utc_now(), product_id, *([tenant_id] if tenant_id is not None else [])],
         )
-    return {"item": get_product(product_id), "movement_type": movement_type, "quantity": quantity}
+    return {"item": get_product(product_id, tenant_id=tenant_id), "movement_type": movement_type, "quantity": quantity}
 
 
 def write_demo_report(title: str = "AskMamma Operations Report", output_format: str = "md") -> dict[str, Any]:
