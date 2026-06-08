@@ -5,6 +5,65 @@ const SESSION_STORAGE_KEY = "askmamma-session-id";
 const AUTH_STORAGE_KEY = "inventory-pilot-auth-token";
 const USER_STORAGE_KEY = "inventory-pilot-auth-user";
 
+type UserRole = "admin" | "manager" | "analyst" | "viewer";
+
+interface AuthUser {
+  id: number;
+  username: string;
+  full_name: string;
+  role: UserRole;
+  tenant_id: number;
+  tenant_slug: string;
+  tenant_name: string;
+}
+
+interface Product {
+  id: number;
+  sku: string;
+  name: string;
+  category: string;
+  description?: string;
+  supplier_name?: string;
+  stock_quantity: number;
+  reorder_level: number;
+  reorder_quantity: number;
+  price: number;
+  location?: string;
+}
+
+interface Supplier {
+  id: number;
+  name: string;
+  country?: string;
+  contact_email?: string;
+  phone?: string;
+  lead_time_days: number;
+  product_count: number;
+  low_stock_count: number;
+  out_of_stock_count: number;
+}
+
+interface AIInsight {
+  ai_explanation?: string;
+  message?: string;
+  ai_source?: string;
+  provider?: string;
+  model?: string;
+  llm_used?: boolean;
+  generated_at?: string;
+}
+
+interface ReorderRequest {
+  id: number;
+  supplier_id: number;
+  supplier_name: string;
+  status: "Draft" | "Submitted" | "Approved" | "Rejected" | "Completed";
+  notes?: string;
+  items: Array<Record<string, unknown>>;
+  created_at: string;
+  updated_at: string;
+}
+
 const formatter = new Intl.NumberFormat("en-US");
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -32,9 +91,9 @@ const navigationItems = [
 ];
 
 const rolePermissions = {
-  admin: new Set(["admin:read", "report:write"]),
-  manager: new Set(["report:write"]),
-  analyst: new Set([]),
+  admin: new Set(["admin:read", "report:write", "reorder:read"]),
+  manager: new Set(["report:write", "reorder:read"]),
+  analyst: new Set(["reorder:read"]),
   viewer: new Set([]),
 };
 
@@ -123,7 +182,7 @@ async function request(path, options = {}) {
 export default function App() {
   const [sessionId] = useState(getSessionId);
   const [authToken, setAuthToken] = useState(() => window.sessionStorage.getItem(AUTH_STORAGE_KEY) ?? "");
-  const [currentUser, setCurrentUser] = useState(() => {
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => {
     const stored = window.sessionStorage.getItem(USER_STORAGE_KEY);
     return stored ? JSON.parse(stored) : null;
   });
@@ -131,13 +190,14 @@ export default function App() {
   const [loginError, setLoginError] = useState("");
   const [routeState, setRouteState] = useState(parseHash);
   const [health, setHealth] = useState({ status: "loading", environment: "..." });
-  const [dashboard, setDashboard] = useState(null);
-  const [products, setProducts] = useState([]);
-  const [suppliers, setSuppliers] = useState([]);
-  const [recommendations, setRecommendations] = useState([]);
-  const [reports, setReports] = useState([]);
-  const [diagnostics, setDiagnostics] = useState(null);
-  const [pageInsight, setPageInsight] = useState(null);
+  const [dashboard, setDashboard] = useState<any>(null);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [recommendations, setRecommendations] = useState<any[]>([]);
+  const [reports, setReports] = useState<any[]>([]);
+  const [reorderRequests, setReorderRequests] = useState<ReorderRequest[]>([]);
+  const [diagnostics, setDiagnostics] = useState<any>(null);
+  const [pageInsight, setPageInsight] = useState<AIInsight | null>(null);
   const [pageInsightLoading, setPageInsightLoading] = useState(false);
   const [selectedProductId, setSelectedProductId] = useState(null);
   const [productQuery, setProductQuery] = useState("");
@@ -167,7 +227,7 @@ export default function App() {
   }, []);
 
   async function loadAllData() {
-    const [healthData, dashboardData, productData, supplierData, recommendationData, reportData, diagnosticsData] =
+    const [healthData, dashboardData, productData, supplierData, recommendationData, reportData, reorderRequestData, diagnosticsData] =
       await Promise.all([
         request("/health"),
         request("/dashboard"),
@@ -175,6 +235,7 @@ export default function App() {
         request("/demo/suppliers"),
         request("/demo/recommendations/reorder"),
         request("/reports"),
+        can(currentUser, "reorder:read") ? request("/reorder/requests") : Promise.resolve([]),
         can(currentUser, "admin:read") ? request("/admin/diagnostics") : Promise.resolve(null),
       ]);
 
@@ -185,6 +246,7 @@ export default function App() {
       setSuppliers(supplierData);
       setRecommendations(recommendationData);
       setReports(reportData);
+      setReorderRequests(reorderRequestData);
       setDiagnostics(diagnosticsData);
       setSelectedProductId((current) => current ?? productData[0]?.id ?? null);
     });
@@ -213,7 +275,12 @@ export default function App() {
     }
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    try {
+      await request("/auth/logout", { method: "POST" });
+    } catch {
+      // Local logout still clears demo session state if the server session is already gone.
+    }
     window.sessionStorage.removeItem(AUTH_STORAGE_KEY);
     window.sessionStorage.removeItem(USER_STORAGE_KEY);
     setAuthToken("");
@@ -570,7 +637,7 @@ export default function App() {
           />
         ) : null}
         {routeState.route === "reorder" ? <ReorderPage recommendations={recommendations} insight={pageInsight} loading={pageInsightLoading} /> : null}
-        {routeState.route === "suppliers" ? <SuppliersPage suppliers={suppliers} insight={pageInsight} loading={pageInsightLoading} /> : null}
+        {routeState.route === "suppliers" ? <SuppliersPage suppliers={suppliers} reorderRequests={reorderRequests} insight={pageInsight} loading={pageInsightLoading} /> : null}
         {routeState.route === "reports" ? (
           <ReportsPage
             reports={reports}
@@ -955,7 +1022,7 @@ function ReorderPage({ recommendations, insight, loading }) {
   );
 }
 
-function SuppliersPage({ suppliers, insight, loading }) {
+function SuppliersPage({ suppliers, reorderRequests, insight, loading }: { suppliers: Supplier[]; reorderRequests: ReorderRequest[]; insight: AIInsight | null; loading: boolean }) {
   return (
     <div className="page-grid">
       <section className="panel">
@@ -988,6 +1055,33 @@ function SuppliersPage({ suppliers, insight, loading }) {
               </div>
             </article>
           ))}
+        </div>
+      </section>
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <p className="section-label">Supplier Coordination</p>
+            <h3>Reorder requests</h3>
+          </div>
+        </div>
+        <div className="list-stack">
+          {reorderRequests.map((request) => (
+            <article key={request.id} className="list-card">
+              <div className="list-card-top">
+                <div>
+                  <strong>{request.supplier_name}</strong>
+                  <span>Request #{request.id} | {formatGeneratedAt(request.created_at)}</span>
+                </div>
+                <strong>{request.status}</strong>
+              </div>
+              <p>{request.notes || "No notes provided."}</p>
+              <div className="meta-row">
+                <span>Items: {request.items.length}</span>
+                <span>Updated: {formatGeneratedAt(request.updated_at)}</span>
+              </div>
+            </article>
+          ))}
+          {!reorderRequests.length ? <div className="empty-state">No supplier reorder requests yet.</div> : null}
         </div>
       </section>
     </div>

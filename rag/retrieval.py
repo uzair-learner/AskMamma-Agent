@@ -125,9 +125,15 @@ def ingest_document(path: Path, rebuild_index: bool = True, tenant_id: int = 1) 
 
     splitter = _splitter()
     with get_connection() as connection:
-        existing = connection.execute("SELECT id FROM documents WHERE path = ? AND tenant_id = ?", (str(path), tenant_id)).fetchall()
-        for row in existing:
-            connection.execute("DELETE FROM document_chunks WHERE document_id = ?", (row["id"],))
+        connection.execute(
+            """
+            DELETE FROM document_chunks
+            WHERE document_id IN (
+                SELECT id FROM documents WHERE path = ? AND tenant_id = ?
+            )
+            """,
+            (str(path), tenant_id),
+        )
         connection.execute("DELETE FROM documents WHERE path = ? AND tenant_id = ?", (str(path), tenant_id))
         cursor = connection.execute(
             """

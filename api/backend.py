@@ -35,17 +35,22 @@ from core.llm_provider import (
 from core.observability import configure_langsmith, safe_error_message
 from db.database import (
     create_product,
+    create_reorder_request,
     dashboard_stats,
     delete_product,
     find_product,
     get_product,
     initialize_database,
+    list_audit_logs,
     list_ai_generation_events,
+    list_reorder_requests,
     list_suppliers,
     list_products,
+    log_audit_event,
     log_ai_generation_event,
     low_stock_products,
     out_of_stock_products,
+    update_reorder_request,
     update_product,
 )
 from memory.service import audit_memory, conversation_memory, semantic_memory
@@ -131,6 +136,19 @@ class MCPRpcPayload(BaseModel):
     id: str | int | None = None
     method: str
     params: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReorderRequestPayload(BaseModel):
+    supplier_id: int
+    items: list[dict[str, Any]] = Field(default_factory=list)
+    notes: str = ""
+    status: str = "Draft"
+
+
+class ReorderRequestUpdatePayload(BaseModel):
+    status: str | None = None
+    notes: str | None = None
+    items: list[dict[str, Any]] | None = None
 
 
 @app.on_event("startup")
@@ -307,6 +325,15 @@ def _generate_ai_content(
             ),
         }
         _cache_ai_content(feature_name, content_key, prompt, payload)
+        if track_event and tenant_id is not None:
+            log_audit_event(
+                tenant_id=tenant_id,
+                user_id=None,
+                action="ai_recommendation_generated",
+                entity_type=feature_name,
+                entity_id=payload.get("generated_at"),
+                new_value={"content_key": content_key, "model": model},
+            )
         return payload
     except Exception as exc:
         error_message = safe_error_message(exc)
@@ -453,16 +480,20 @@ def demo_item(item_id: int, user: dict[str, Any] | None = Depends(optional_curre
 def demo_item_create(payload: DemoItemPayload, user: dict[str, Any] = Depends(require_permission("inventory:write"))) -> dict[str, Any]:
     if not payload.confirm:
         raise HTTPException(status_code=400, detail="Set confirm=true to create or overwrite demo item data.")
-    return create_product(payload.model_dump(exclude={"confirm"}), tenant_id=int(user["tenant_id"]))
+    product = create_product(payload.model_dump(exclude={"confirm"}), tenant_id=int(user["tenant_id"]))
+    log_audit_event(tenant_id=int(user["tenant_id"]), user_id=user["id"], action="product_create", entity_type="product", entity_id=product["id"], new_value=product)
+    return product
 
 
 @app.put("/demo/items/{item_id}", summary="Update a sample demo item")
 def demo_item_update(item_id: int, payload: DemoItemPayload, user: dict[str, Any] = Depends(require_permission("inventory:write"))) -> dict[str, Any]:
     if not payload.confirm:
         raise HTTPException(status_code=400, detail="Set confirm=true to update demo item data.")
+    old_item = get_product(item_id, int(user["tenant_id"]))
     item = update_product(item_id, payload.model_dump(exclude={"confirm"}), tenant_id=int(user["tenant_id"]))
     if not item:
         raise HTTPException(status_code=404, detail="Demo item not found")
+    log_audit_event(tenant_id=int(user["tenant_id"]), user_id=user["id"], action="product_update", entity_type="product", entity_id=item_id, old_value=old_item, new_value=item)
     return item
 
 
@@ -470,7 +501,10 @@ def demo_item_update(item_id: int, payload: DemoItemPayload, user: dict[str, Any
 def demo_item_delete(item_id: int, confirm: bool = False, user: dict[str, Any] = Depends(require_permission("inventory:write"))) -> dict[str, Any]:
     if not confirm:
         raise HTTPException(status_code=400, detail="Set confirm=true to delete a demo item.")
-    return {"deleted": delete_product(item_id, tenant_id=int(user["tenant_id"]))}
+    old_item = get_product(item_id, int(user["tenant_id"]))
+    deleted = delete_product(item_id, tenant_id=int(user["tenant_id"]))
+    log_audit_event(tenant_id=int(user["tenant_id"]), user_id=user["id"], action="product_delete", entity_type="product", entity_id=item_id, old_value=old_item, new_value={"deleted": deleted})
+    return {"deleted": deleted}
 
 
 @app.get("/demo/availability/low", summary="List low-availability sample demo items")
@@ -491,6 +525,63 @@ def demo_suppliers(user: dict[str, Any] | None = Depends(optional_current_user))
 @app.get("/demo/recommendations/reorder", summary="List sample demo reorder recommendations")
 def demo_recommendations_reorder(user: dict[str, Any] | None = Depends(optional_current_user)) -> list[dict[str, Any]]:
     return demo_reorder_recommendations(tenant_id=_tenant_from_user(user))
+
+
+@app.get("/reorder/requests")
+def reorder_requests_list(
+    status: str | None = None,
+    user: dict[str, Any] = Depends(require_permission("reorder:read")),
+) -> list[dict[str, Any]]:
+    return list_reorder_requests(int(user["tenant_id"]), status=status)
+
+
+@app.post("/reorder/requests")
+def reorder_requests_create(
+    payload: ReorderRequestPayload,
+    user: dict[str, Any] = Depends(require_permission("reorder:write")),
+) -> dict[str, Any]:
+    try:
+        request_record = create_reorder_request(
+            tenant_id=int(user["tenant_id"]),
+            supplier_id=payload.supplier_id,
+            requested_by_user_id=int(user["id"]),
+            items=payload.items,
+            notes=payload.notes,
+            status=payload.status,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=safe_error_message(exc)) from exc
+    log_audit_event(
+        tenant_id=int(user["tenant_id"]),
+        user_id=user["id"],
+        action="reorder_request_create",
+        entity_type="reorder_request",
+        entity_id=request_record["id"],
+        new_value=request_record,
+    )
+    return request_record
+
+
+@app.put("/reorder/requests/{request_id}")
+def reorder_requests_update(
+    request_id: int,
+    payload: ReorderRequestUpdatePayload,
+    user: dict[str, Any] = Depends(require_permission("reorder:write")),
+) -> dict[str, Any]:
+    old_records = [record for record in list_reorder_requests(int(user["tenant_id"])) if record["id"] == request_id]
+    updated = update_reorder_request(request_id, int(user["tenant_id"]), payload.model_dump(exclude_unset=True))
+    if not updated:
+        raise HTTPException(status_code=404, detail="Reorder request not found")
+    log_audit_event(
+        tenant_id=int(user["tenant_id"]),
+        user_id=user["id"],
+        action="reorder_request_update",
+        entity_type="reorder_request",
+        entity_id=request_id,
+        old_value=old_records[0] if old_records else None,
+        new_value=updated,
+    )
+    return updated
 
 
 @app.get("/ai/insights/forecasts")
@@ -590,7 +681,9 @@ def ai_suppliers_insight(user: dict[str, Any] | None = Depends(optional_current_
 @app.post("/demo/availability/restock", summary="Record sample demo availability replenishment")
 def demo_availability_restock(payload: DemoAvailabilityPayload, user: dict[str, Any] = Depends(require_permission("inventory:write"))) -> dict[str, Any]:
     try:
-        return add_demo_movement(payload.product_id, "stock_in", payload.quantity, payload.reason, payload.confirm, tenant_id=int(user["tenant_id"]))
+        movement = add_demo_movement(payload.product_id, "stock_in", payload.quantity, payload.reason, payload.confirm, tenant_id=int(user["tenant_id"]))
+        log_audit_event(tenant_id=int(user["tenant_id"]), user_id=user["id"], action="inventory_movement", entity_type="product", entity_id=payload.product_id, new_value=movement)
+        return movement
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=safe_error_message(exc)) from exc
 
@@ -862,6 +955,11 @@ def reports_askmamma(user: dict[str, Any] = Depends(require_permission("report:w
         **report,
         "title": "Inventory Pilot AI Online Report",
     }
+
+
+@app.get("/audit/logs")
+def audit_logs(limit: int = 100, user: dict[str, Any] = Depends(require_permission("audit:read"))) -> list[dict[str, Any]]:
+    return list_audit_logs(int(user["tenant_id"]), limit=limit)
 
 
 @app.get("/ai/insights/reports")

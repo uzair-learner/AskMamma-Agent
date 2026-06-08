@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import os
+import json
+import secrets
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -281,6 +284,46 @@ def initialize_database() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                tenant_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id INTEGER NOT NULL,
+                user_id INTEGER,
+                action TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT,
+                old_value TEXT,
+                new_value TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS reorder_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tenant_id INTEGER NOT NULL,
+                supplier_id INTEGER NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('Draft', 'Submitted', 'Approved', 'Rejected', 'Completed')),
+                requested_by_user_id INTEGER,
+                notes TEXT,
+                items_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id),
+                FOREIGN KEY (supplier_id) REFERENCES suppliers(id),
+                FOREIGN KEY (requested_by_user_id) REFERENCES users(id)
             );
             """
         )
@@ -653,6 +696,191 @@ def get_user_by_id(user_id: int) -> dict[str, Any] | None:
             (user_id,),
         ).fetchone()
     return dict(row) if row else None
+
+
+def create_user_session(user_id: int, tenant_id: int, expires_minutes: int) -> dict[str, Any]:
+    initialize_database()
+    session_id = secrets.token_urlsafe(24)
+    created_at = utc_now()
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=expires_minutes)).isoformat()
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO user_sessions (id, user_id, tenant_id, created_at, expires_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (session_id, user_id, tenant_id, created_at, expires_at),
+        )
+    return {"id": session_id, "user_id": user_id, "tenant_id": tenant_id, "created_at": created_at, "expires_at": expires_at}
+
+
+def get_user_session(session_id: str) -> dict[str, Any] | None:
+    initialize_database()
+    with get_connection() as connection:
+        row = connection.execute("SELECT * FROM user_sessions WHERE id = ?", (session_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def revoke_user_session(session_id: str) -> bool:
+    initialize_database()
+    with get_connection() as connection:
+        cursor = connection.execute(
+            "UPDATE user_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+            (utc_now(), session_id),
+        )
+    return cursor.rowcount > 0
+
+
+def log_audit_event(
+    *,
+    tenant_id: int,
+    user_id: int | None,
+    action: str,
+    entity_type: str,
+    entity_id: str | int | None = None,
+    old_value: Any = None,
+    new_value: Any = None,
+) -> dict[str, Any]:
+    initialize_database()
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO audit_logs (
+                tenant_id, user_id, action, entity_type, entity_id, old_value, new_value, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tenant_id,
+                user_id,
+                action,
+                entity_type,
+                str(entity_id) if entity_id is not None else None,
+                json.dumps(old_value, default=str) if old_value is not None else None,
+                json.dumps(new_value, default=str) if new_value is not None else None,
+                utc_now(),
+            ),
+        )
+        row = connection.execute("SELECT * FROM audit_logs WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    return dict(row) if row else {}
+
+
+def list_audit_logs(tenant_id: int, limit: int = 100) -> list[dict[str, Any]]:
+    initialize_database()
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT a.*, u.username
+            FROM audit_logs a
+            LEFT JOIN users u ON u.id = a.user_id
+            WHERE a.tenant_id = ?
+            ORDER BY a.id DESC
+            LIMIT ?
+            """,
+            (tenant_id, limit),
+        ).fetchall()
+    return rows_to_dicts(rows)
+
+
+def create_reorder_request(
+    *,
+    tenant_id: int,
+    supplier_id: int,
+    requested_by_user_id: int,
+    items: list[dict[str, Any]],
+    notes: str = "",
+    status: str = "Draft",
+) -> dict[str, Any]:
+    initialize_database()
+    now = utc_now()
+    with get_connection() as connection:
+        supplier = connection.execute(
+            "SELECT id FROM suppliers WHERE id = ? AND tenant_id = ?",
+            (supplier_id, tenant_id),
+        ).fetchone()
+        if not supplier:
+            raise ValueError("Supplier not found for current tenant.")
+        cursor = connection.execute(
+            """
+            INSERT INTO reorder_requests (
+                tenant_id, supplier_id, status, requested_by_user_id, notes, items_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (tenant_id, supplier_id, status, requested_by_user_id, notes, json.dumps(items, default=str), now, now),
+        )
+    request = get_reorder_request(int(cursor.lastrowid), tenant_id)
+    if not request:
+        raise RuntimeError("Reorder request creation failed.")
+    return request
+
+
+def get_reorder_request(request_id: int, tenant_id: int) -> dict[str, Any] | None:
+    initialize_database()
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT r.*, s.name AS supplier_name, u.username AS requested_by
+            FROM reorder_requests r
+            JOIN suppliers s ON s.id = r.supplier_id
+            LEFT JOIN users u ON u.id = r.requested_by_user_id
+            WHERE r.id = ? AND r.tenant_id = ?
+            """,
+            (request_id, tenant_id),
+        ).fetchone()
+    if not row:
+        return None
+    payload = dict(row)
+    payload["items"] = json.loads(payload.pop("items_json") or "[]")
+    return payload
+
+
+def list_reorder_requests(tenant_id: int, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    initialize_database()
+    params: list[Any] = [tenant_id]
+    status_clause = ""
+    if status:
+        status_clause = " AND r.status = ?"
+        params.append(status)
+    params.append(limit)
+    with get_connection() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT r.*, s.name AS supplier_name, u.username AS requested_by
+            FROM reorder_requests r
+            JOIN suppliers s ON s.id = r.supplier_id
+            LEFT JOIN users u ON u.id = r.requested_by_user_id
+            WHERE r.tenant_id = ?{status_clause}
+            ORDER BY r.id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    requests = rows_to_dicts(rows)
+    for request in requests:
+        request["items"] = json.loads(request.pop("items_json") or "[]")
+    return requests
+
+
+def update_reorder_request(request_id: int, tenant_id: int, payload: dict[str, Any]) -> dict[str, Any] | None:
+    initialize_database()
+    current = get_reorder_request(request_id, tenant_id)
+    if not current:
+        return None
+    allowed = {"status", "notes"}
+    updates = {key: value for key, value in payload.items() if key in allowed and value is not None}
+    if "items" in payload and payload["items"] is not None:
+        updates["items_json"] = json.dumps(payload["items"], default=str)
+    if not updates:
+        return current
+    updates["updated_at"] = utc_now()
+    assignments = ", ".join(f"{field} = ?" for field in updates)
+    with get_connection() as connection:
+        connection.execute(
+            f"UPDATE reorder_requests SET {assignments} WHERE id = ? AND tenant_id = ?",
+            [*updates.values(), request_id, tenant_id],
+        )
+    return get_reorder_request(request_id, tenant_id)
 
 
 if __name__ == "__main__":

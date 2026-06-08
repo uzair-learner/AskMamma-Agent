@@ -52,7 +52,7 @@ def _sign(message: str) -> str:
     return _b64url(signature)
 
 
-def create_access_token(*, user: dict[str, Any]) -> str:
+def create_access_token(*, user: dict[str, Any], session_id: str) -> str:
     now = datetime.now(timezone.utc)
     expires = now + timedelta(minutes=config.JWT_EXPIRY_MINUTES)
     header = {"alg": config.JWT_ALGORITHM, "typ": "JWT"}
@@ -61,6 +61,7 @@ def create_access_token(*, user: dict[str, Any]) -> str:
         "username": user["username"],
         "role": user["role"],
         "tenant_id": int(user["tenant_id"]),
+        "sid": session_id,
         "iss": config.JWT_ISSUER,
         "aud": config.JWT_AUDIENCE,
         "iat": int(now.timestamp()),

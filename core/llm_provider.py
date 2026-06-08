@@ -201,7 +201,7 @@ class OllamaProvider:
         )
         try:
             url = f"{config.OLLAMA_BASE_URL.rstrip('/')}/api/generate"
-            timeout_seconds = max(60, config.AGENT_TIMEOUT_SECONDS)
+            timeout_seconds = max(5, config.AGENT_TIMEOUT_SECONDS)
             payload = {
                 "model": model_name,
                 "prompt": prompt,
@@ -433,13 +433,29 @@ def _create_ollama_chat_model() -> Any:
 
     model_name = resolve_ollama_model_name()
     try:
-        return ChatOllama(model=model_name, temperature=0, base_url=config.OLLAMA_BASE_URL, num_predict=180)
+        return ChatOllama(
+            model=model_name,
+            temperature=0,
+            base_url=config.OLLAMA_BASE_URL,
+            num_predict=180,
+            request_timeout=max(5, config.AGENT_TIMEOUT_SECONDS),
+        )
     except TypeError:
         try:
-            return ChatOllama(model=model_name, base_url=config.OLLAMA_BASE_URL, num_predict=180)
+            return ChatOllama(
+                model=model_name,
+                base_url=config.OLLAMA_BASE_URL,
+                num_predict=180,
+                request_timeout=max(5, config.AGENT_TIMEOUT_SECONDS),
+            )
         except TypeError:
             try:
-                return ChatOllama(model=model_name, temperature=0, num_predict=180)
+                return ChatOllama(
+                    model=model_name,
+                    temperature=0,
+                    num_predict=180,
+                    request_timeout=max(5, config.AGENT_TIMEOUT_SECONDS),
+                )
             except Exception as exc:
                 raise RuntimeError(
                     f"Unable to create ChatOllama for model {model_name} at {config.OLLAMA_BASE_URL}. Error: {exc}"

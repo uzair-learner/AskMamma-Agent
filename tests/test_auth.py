@@ -95,6 +95,44 @@ def test_tenant_isolation_for_products():
     assert tenant_b_products.json() == []
 
 
+def test_logout_invalidates_session():
+    headers = login("admin@example.com", "AdminPass123!")
+    logout_response = client.post("/auth/logout", headers=headers)
+    assert logout_response.status_code == 200
+    me_response = client.get("/auth/me", headers=headers)
+    assert me_response.status_code == 401
+    assert me_response.json()["detail"]["error_code"] == "invalid_session"
+
+
+def test_reorder_request_workflow_and_audit_log():
+    headers = login("manager@example.com", "ManagerPass123!")
+    supplier_response = client.get("/demo/suppliers", headers=headers)
+    supplier_id = supplier_response.json()[0]["id"]
+    create_response = client.post(
+        "/reorder/requests",
+        json={
+            "supplier_id": supplier_id,
+            "status": "Draft",
+            "notes": "Demo reorder coordination",
+            "items": [{"sku": "OFF-001", "recommended_quantity": 10}],
+        },
+        headers=headers,
+    )
+    assert create_response.status_code == 200
+    request_id = create_response.json()["id"]
+    update_response = client.put(
+        f"/reorder/requests/{request_id}",
+        json={"status": "Submitted"},
+        headers=headers,
+    )
+    assert update_response.status_code == 200
+    assert update_response.json()["status"] == "Submitted"
+    audit_response = client.get("/audit/logs", headers=headers)
+    assert audit_response.status_code == 200
+    actions = {entry["action"] for entry in audit_response.json()}
+    assert {"reorder_request_create", "reorder_request_update"}.issubset(actions)
+
+
 def test_research_question_does_not_crash():
     headers = login("analyst@example.com", "AnalystPass123!")
     response = client.post(

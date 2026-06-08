@@ -3,20 +3,23 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import Depends, Header, HTTPException, status
 
 from api.security import TokenError, decode_access_token
-from db.database import get_user_by_id
+from db.database import get_user_by_id, get_user_session
 
 
 ROLE_PERMISSIONS = {
     "admin": {
         "admin:read",
+        "audit:read",
         "inventory:read",
         "inventory:write",
         "reorder:read",
+        "reorder:write",
         "supplier:read",
         "supplier:write",
         "forecast:read",
@@ -25,11 +28,14 @@ ROLE_PERMISSIONS = {
         "ai:chat",
         "document:read",
         "document:write",
+        "audit:read",
     },
     "manager": {
+        "audit:read",
         "inventory:read",
         "inventory:write",
         "reorder:read",
+        "reorder:write",
         "supplier:read",
         "supplier:write",
         "forecast:read",
@@ -76,6 +82,13 @@ def get_current_user(authorization: str | None = Header(default=None)) -> dict[s
     user = get_user_by_id(int(payload["sub"]))
     if not user or not user.get("is_active"):
         raise _auth_error("invalid_token", "Authenticated user no longer exists or is inactive.")
+    session_id = payload.get("sid")
+    session = get_user_session(str(session_id)) if session_id else None
+    if not session or session.get("revoked_at"):
+        raise _auth_error("invalid_session", "Session is no longer active.")
+    if datetime.fromisoformat(session["expires_at"]) < datetime.now(timezone.utc):
+        raise _auth_error("token_expired", "Session has expired.")
+    user["session_id"] = session_id
     return user
 
 
