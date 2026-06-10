@@ -8,4 +8,5 @@ if (-not (Test-Path $pythonExe)) {
 }
 
 Set-Location $projectRoot
-& $pythonExe -m uvicorn api.backend:app --host 127.0.0.1 --port 8000 --reload
+$env:PYTHONPATH = Join-Path $projectRoot "src"
+& $pythonExe -m uvicorn inventory_pilot_ai.main:app --host 127.0.0.1 --port 8000 --reload

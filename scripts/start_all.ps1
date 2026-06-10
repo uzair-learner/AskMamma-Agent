@@ -107,7 +107,7 @@ Write-Host "Seeding demo data and document index..."
 & $pythonExe scripts/seed_data.py
 
 if (Test-HttpReady -Url $frontendUrl) {
-    Write-Host "AskMamma is already running at $frontendUrl"
+    Write-Host "Inventory Pilot AI is already running at $frontendUrl"
 } else {
     Write-Host "Starting backend..."
     Start-Process `

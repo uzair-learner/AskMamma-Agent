@@ -1,7 +1,7 @@
-from agents.orchestrator import get_session_messages, invoke_agent
-from core import config
-from core.llm_provider import LLM_UNAVAILABLE_MESSAGE
-from rag.retrieval import document_search, reindex_documents
+from inventory_pilot_ai.agents.orchestrator import get_session_messages, invoke_agent
+from inventory_pilot_ai import config
+from inventory_pilot_ai.llm_provider import LLM_UNAVAILABLE_MESSAGE
+from inventory_pilot_ai.rag.retriever import document_search, reindex_documents
 from scripts.seed_data import seed
 
 
@@ -60,10 +60,10 @@ def test_langsmith_disabled_uses_local_trace_backend(monkeypatch):
 
 
 def test_returns_clear_message_when_llm_unavailable(monkeypatch):
-    from workflows.langgraph import workflow
+    from inventory_pilot_ai.workflow import graph
 
     monkeypatch.setattr(
-        workflow,
+        graph,
         "current_runtime_status",
         lambda: {
             "provider": "Ollama",

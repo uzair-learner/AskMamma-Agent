@@ -1,4 +1,4 @@
-"""Seed the local AskMamma database with realistic demo data."""
+"""Seed the local Inventory Pilot AI database with realistic demo data."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 
-from db.database import get_connection, reset_database, utc_now  # noqa: E402
-from rag.retrieval import reindex_documents  # noqa: E402
+from inventory_pilot_ai.db.database import get_connection, reset_database, utc_now  # noqa: E402
+from inventory_pilot_ai.rag.retriever import reindex_documents  # noqa: E402
 
 
 SUPPLIERS = [
@@ -185,7 +185,7 @@ def seed() -> None:
         )
     reindex_documents()
     print(
-        f"Seeded AskMamma database with {len(SUPPLIERS)} suppliers, "
+        f"Seeded Inventory Pilot AI database with {len(SUPPLIERS)} suppliers, "
         f"{len(PRODUCTS)} products, {len(sales_rows)} sales rows, "
         f"{len(movement_rows)} movement rows, and indexed sample documents."
     )

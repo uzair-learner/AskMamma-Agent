@@ -1,4 +1,4 @@
-"""Run route, tool, answer, and intermediate-step evaluation for AskMamma."""
+"""Run route, tool, answer, and intermediate-step evaluation for Inventory Pilot AI."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 
-from agents.orchestrator import invoke_agent  # noqa: E402
+from inventory_pilot_ai.agents.orchestrator import invoke_agent  # noqa: E402
 from scripts.seed_data import seed  # noqa: E402
 
 

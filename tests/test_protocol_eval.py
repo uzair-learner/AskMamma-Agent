@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from api.backend import app
+from inventory_pilot_ai.main import app
 from scripts.evaluate_agent import evaluate_cases
 from scripts.seed_data import seed
 

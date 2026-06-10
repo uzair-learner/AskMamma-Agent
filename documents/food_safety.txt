@@ -1,7 +1,7 @@
-AskMamma Operational Safety Records
+Inventory Pilot AI Operational Safety Records
 
-AskMamma keeps operational safety records for handling sample catalog data, uploaded documents, and generated reports. The records describe review practices for document ingestion, report storage, and local runtime data handling.
+Inventory Pilot AI keeps operational safety records for handling sample catalog data, uploaded documents, and generated reports. The records describe review practices for document ingestion, report storage, and local runtime data handling.
 
 The project team completed local data handling training for safe uploads, source attribution, and avoiding accidental exposure of secrets from environment files.
 
-AskMamma keeps internal audit notes for test runs, trace review, document search quality, and generated report cleanup.
+Inventory Pilot AI keeps internal audit notes for test runs, trace review, document search quality, and generated report cleanup.

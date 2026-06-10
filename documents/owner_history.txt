@@ -1,7 +1,7 @@
-AskMamma Owner History
+Inventory Pilot AI Owner History
 
-AskMamma was created as a local-first agent application for demonstrating practical AI assistant workflows with tools, memory, document retrieval, tracing, and evaluation.
+Inventory Pilot AI was created as a local-first agent application for demonstrating practical AI assistant workflows with tools, memory, document retrieval, tracing, and evaluation.
 
 The name comes from the idea of asking a helpful assistant for grounded answers instead of guessing. The project focuses on clear setup, reproducible local data, and testable agent behavior.
 
-AskMamma continues to evolve around modular backend APIs, a simple UI, seed scripts, and reliable tests.
+Inventory Pilot AI continues to evolve around modular backend APIs, a simple UI, seed scripts, and reliable tests.

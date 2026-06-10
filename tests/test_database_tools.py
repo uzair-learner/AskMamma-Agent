@@ -1,4 +1,4 @@
-from askmamma.tools import (
+from inventory_pilot_ai.tools.inventory_tools import (
     demo_forecast,
     demo_item_lookup,
     demo_partner_lookup,

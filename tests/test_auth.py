@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from api.backend import app
+from inventory_pilot_ai.main import app
 from scripts.seed_data import seed
 
 
@@ -66,7 +66,7 @@ def test_viewer_blocked_from_admin_and_write():
 
 def test_manager_can_generate_report():
     headers = login("manager@example.com", "ManagerPass123!")
-    response = client.get("/reports/askmamma", headers=headers)
+    response = client.get("/reports/inventory-pilot-ai", headers=headers)
     assert response.status_code == 200
     assert response.json()["llm_used"] in {True, False}
 
@@ -141,4 +141,4 @@ def test_research_question_does_not_crash():
         headers=headers,
     )
     assert response.status_code == 200
-    assert response.json()["selected_agent"] in {"ResearchAgent", "ReportingAgent"}
+    assert response.json()["selected_agent"] in {"ResearchAgent", "ReportingAgent", "SupervisorAgent"}

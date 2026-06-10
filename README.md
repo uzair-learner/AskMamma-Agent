@@ -1,23 +1,10 @@
 # Inventory Pilot AI
 
-Inventory Pilot AI / AskMamma Agent is a demo AI-assisted inventory operations platform built for interview demonstration. It uses a FastAPI backend, React/TypeScript frontend, SQLite data store, LangGraph orchestration, LangChain tool calling, and optional local Ollama explanations.
+Inventory Pilot AI is a small AI-assisted inventory operations app. It helps a user inspect stock, find low-availability items, forecast demand, generate reorder recommendations, search local documents, and create inventory reports.
 
-Inventory calculations come from backend tools and SQLite. Ollama explains results but should not invent inventory, supplier, reorder, or forecast data.
+The app has a FastAPI backend, a React frontend, an optional Streamlit UI, SQLite for local data, LangGraph for agent routing, and optional Ollama/OpenAI/Azure OpenAI support for generated explanations.
 
-## CV Alignment
-
-- FastAPI backend: inventory, supplier, forecast, report, auth, audit, document, and agent APIs.
-- React/TypeScript frontend: Vite React UI converted to TSX with typed user/product/supplier/reorder/AI response models.
-- JWT authentication: `/auth/login`, `/auth/me`, `/auth/logout`, signed JWTs, backend session validation.
-- RBAC: backend-enforced roles for admin, manager, analyst, and viewer.
-- Inventory tracking: product catalog, stock levels, low/out-of-stock views, stock movement endpoint.
-- Reorder intelligence: backend reorder recommendations and supplier reorder request workflow.
-- Supplier workflow: reorder requests associated to suppliers with Draft, Submitted, Approved, Rejected, and Completed statuses.
-- Audit logging: product writes, stock movements, login/logout, reorder request changes, and AI generation events.
-- Local LLM/Ollama integration: page insights, reports, and assistant responses.
-- Multi-agent assistant workflow: LangGraph supervisor routes to Inventory, Forecast, Document, Reporting, Research, and Quality Review agents.
-- Forecasting concept: deterministic demo forecasting and clear AI explanation layer; TensorFlow sample is optional and not required for app startup.
-- Tenant-aware architecture concept: users belong to tenants, and protected product, supplier, report, document, audit, and AI data paths filter by tenant.
+The important rule is simple: inventory numbers come from the database and deterministic tools. The LLM may explain the result, but it should not invent stock, supplier, reorder, or forecast data.
 
 ## Demo Users
 
@@ -27,17 +14,23 @@ Inventory calculations come from backend tools and SQLite. Ollama explains resul
 - `viewer@example.com` / `ViewerPass123!`
 - `tenantb-viewer@example.com` / `TenantBPass123!`
 
-## Backend Setup
+## Quick Start
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 Copy-Item .env.example .env
 .\.venv\Scripts\python.exe scripts\seed_data.py
-.\.venv\Scripts\python.exe -m uvicorn api.backend:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-## Frontend Setup
+Run the backend:
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.venv\Scripts\python.exe -m uvicorn inventory_pilot_ai.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Run the React UI:
 
 ```powershell
 cd frontend
@@ -50,6 +43,67 @@ The all-in-one local launcher is:
 ```powershell
 .\scripts\start_all.ps1
 ```
+
+## Optional Streamlit UI
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.venv\Scripts\python.exe -m streamlit run src\inventory_pilot_ai\ui\app.py
+```
+
+The root `app.py` still works as a small compatibility wrapper:
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+## How Agents Work
+
+The API sends chat requests to the workflow graph. The supervisor agent chooses the best specialist:
+
+- `InventoryAgent` handles products, suppliers, stock, availability, and reorder context.
+- `ForecastAgent` handles sales history, demand forecasts, and reorder planning.
+- `DocumentAgent` searches indexed local documents with RAG.
+- `ResearchAgent` answers project and architecture questions from local project files.
+- `ReportingAgent` packages summaries and report payloads.
+- `QualityReviewAgent` checks the answer before it returns to the user.
+
+## Example Request Flow
+
+1. A user asks, “Which products need reorder attention?”
+2. The React or Streamlit UI sends the message to FastAPI.
+3. FastAPI calls the LangGraph workflow.
+4. The supervisor routes the request to the inventory or forecast agent.
+5. The specialist agent calls inventory, forecast, document, report, memory, or RAG tools.
+6. The reporting step packages the result.
+7. Quality review checks grounding and demo-data labeling.
+8. FastAPI returns the final answer to the UI.
+
+## Folder Structure
+
+```text
+src/
+  inventory_pilot_ai/
+    main.py
+    config.py
+    api/
+    ui/
+    agents/
+    workflow/
+    memory/
+    tools/
+    rag/
+    db/
+    protocols/
+tests/
+docs/
+frontend/
+documents/
+scripts/
+```
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the detailed file-by-file flow.
 
 ## Running With Ollama
 
@@ -69,48 +123,16 @@ OLLAMA_MODEL=llama3.2:latest
 
 ## Running Without Ollama
 
-The inventory, supplier, reorder, auth, audit, and tenant APIs still run. AI endpoints return controlled unavailable responses instead of crashing the app.
+Inventory, supplier, reorder, auth, audit, tenant, and document APIs still run. AI endpoints return controlled unavailable responses instead of crashing.
 
 ## Tests
-
-Focused fast/security tests:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest tests\test_auth.py tests\test_api.py
-```
-
-Targeted RAG test:
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest tests\test_agent_rag.py::test_document_search_uses_vector_retriever
-```
-
-Full test suite:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-Some full-suite tests call local Ollama and can be slow.
+Focused API/security tests:
 
-## Required Environment Variables
-
-- `DATABASE_URL`
-- `LLM_PROVIDER`
-- `OLLAMA_BASE_URL`
-- `OLLAMA_MODEL`
-- `JWT_SECRET`
-- `JWT_ISSUER`
-- `JWT_AUDIENCE`
-- `JWT_EXPIRY_MINUTES`
-- `JWT_ALGORITHM`
-
-Use a strong private `JWT_SECRET` outside local demo work.
-
-## Limitations / Future Enhancements
-
-- Full production SaaS billing is not implemented.
-- Production cloud deployment and infrastructure are documented concepts, not provisioned infrastructure.
-- Advanced ML forecasting is not production-grade; current forecasting is a concept/demo workflow.
-- Enterprise SSO is not implemented.
-- Production monitoring, alerting, and SIEM integration are not implemented.
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_auth.py tests\test_api.py
+```

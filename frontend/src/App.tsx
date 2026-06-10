@@ -1,7 +1,7 @@
 import { startTransition, useEffect, useMemo, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
-const SESSION_STORAGE_KEY = "askmamma-session-id";
+const SESSION_STORAGE_KEY = "Inventory Pilot AI-session-id";
 const AUTH_STORAGE_KEY = "inventory-pilot-auth-token";
 const USER_STORAGE_KEY = "inventory-pilot-auth-user";
 
@@ -445,7 +445,7 @@ export default function App() {
     setIsGeneratingReport(true);
     setError("");
     try {
-      const report = await request("/reports/askmamma");
+      const report = await request("/reports/inventory-pilot-ai");
       setReportSummary("");
       startTransition(() => setReports((current) => [report, ...current.filter((item) => item.created_at !== report.created_at)]));
       await loadAllData();

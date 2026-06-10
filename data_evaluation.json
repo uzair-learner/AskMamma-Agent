@@ -2,7 +2,7 @@
   {
     "question": "Hi",
     "expected_answer_summary": "friendly greeting and capabilities overview",
-    "answer_must_include": ["help", "AskMamma"],
+    "answer_must_include": ["help", "Inventory Pilot AI"],
     "expected_tools": [],
     "expected_agent_route": "SupervisorAgent",
     "expected_route_path_contains": ["SupervisorAgent"]
@@ -40,7 +40,7 @@
     "expected_route_path_contains": ["SupervisorAgent", "DocumentAgent", "ReportingAgent", "QualityReviewAgent"]
   },
   {
-    "question": "Generate a short AskMamma report.",
+    "question": "Generate a short Inventory Pilot AI report.",
     "expected_answer_summary": "saved report path",
     "answer_must_include": ["Saved report", "recommendations"],
     "expected_tools": ["DemoReportWriterTool"],

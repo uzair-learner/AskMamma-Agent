@@ -1,6 +1,6 @@
-AskMamma Project Notes
+Inventory Pilot AI Project Notes
 
-AskMamma includes a FastAPI backend, Streamlit UI, SQLite data layer, document retrieval, local tracing, and evaluation scripts.
+Inventory Pilot AI includes a FastAPI backend, Streamlit UI, SQLite data layer, document retrieval, local tracing, and evaluation scripts.
 
 The project emphasizes local development, source-controlled configuration examples, and generated runtime files that stay out of Git.
 

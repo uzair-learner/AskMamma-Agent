@@ -1,4 +1,4 @@
-# AskMamma Interview Guide
+# Inventory Pilot AI Interview Guide
 
 ## What is an AI Agent?
 An AI agent is a system that can receive a goal, decide what step to take next, use tools, and return a result. In this project the agent is not just a chat box. It can route work, call inventory and retrieval tools, and keep memory.

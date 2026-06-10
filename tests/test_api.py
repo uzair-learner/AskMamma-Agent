@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
-from api.backend import app
-from core import config
+from inventory_pilot_ai.main import app
+from inventory_pilot_ai import config
 from scripts.seed_data import seed
 
 
@@ -88,7 +88,7 @@ def test_mcp_rpc_list_and_call():
 def test_agent_tasks_endpoint():
     response = client.post(
         "/agent/tasks",
-        json={"task_id": "task-123", "message": "Generate a short AskMamma report.", "metadata": {"source": "test"}},
+        json={"task_id": "task-123", "message": "Generate a short Inventory Pilot AI report.", "metadata": {"source": "test"}},
         headers=auth_headers(),
     )
     assert response.status_code == 200
@@ -155,10 +155,10 @@ def test_admin_diagnostics_endpoint():
 
 
 def test_chat_endpoint_returns_clear_message_when_llm_unavailable(monkeypatch):
-    from workflows.langgraph import workflow
+    from inventory_pilot_ai.workflow import graph
 
     monkeypatch.setattr(
-        workflow,
+        graph,
         "current_runtime_status",
         lambda: {
             "provider": "Ollama",
@@ -181,7 +181,7 @@ def test_chat_endpoint_returns_clear_message_when_llm_unavailable(monkeypatch):
 
 
 def test_reports_endpoint_returns_excel_download():
-    response = client.get("/reports/askmamma", headers=auth_headers())
+    response = client.get("/reports/inventory-pilot-ai", headers=auth_headers())
     assert response.status_code == 200
     payload = response.json()
     assert payload["title"] == "Inventory Pilot AI Online Report"
@@ -193,7 +193,7 @@ def test_reports_endpoint_returns_excel_download():
 
 
 def test_reports_list_returns_excel_entries():
-    client.get("/reports/askmamma", headers=auth_headers())
+    client.get("/reports/inventory-pilot-ai", headers=auth_headers())
     response = client.get("/reports")
     assert response.status_code == 200
     payload = response.json()
