@@ -44,6 +44,23 @@ The all-in-one local launcher is:
 .\scripts\start_all.ps1
 ```
 
+## Inventory Management
+
+Open the React UI, sign in as `admin@example.com` or `manager@example.com`, and choose **Inventory Management** in the sidebar.
+
+From that screen you can:
+
+- View inventory records in a searchable grid.
+- Search by product name, SKU, category, supplier, or stock status.
+- Filter by in-stock, low-stock, and out-of-stock status.
+- Add a new product record.
+- Select a row to view product details, including internal ID, supplier lead time, status, quantity, price, and timestamps.
+- Edit an existing product.
+- Delete a product after confirming the action.
+- Refresh live data and clear success/error messages.
+
+Inventory records are persisted through the FastAPI product endpoints into the local SQLite database configured by `DATABASE_URL` or, by default, `inventory_pilot_ai.db` in the project root. The FAISS/vector store is used only for document upload, indexing, and RAG search; it is not used for product or inventory CRUD.
+
 ## Optional Streamlit UI
 
 ```powershell

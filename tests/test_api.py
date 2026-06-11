@@ -117,6 +117,54 @@ def test_stock_movement_requires_confirmation():
     assert response.status_code == 400
 
 
+def test_inventory_product_crud_persists_to_sqlite():
+    headers = auth_headers()
+    sku = "CRUD-API-001"
+    create_payload = {
+        "sku": sku,
+        "name": "CRUD API Test Product",
+        "category": "Testing",
+        "description": "Created by API regression test",
+        "supplier_id": 1,
+        "price": 12.5,
+        "cost": 12.5,
+        "stock_quantity": 7,
+        "reorder_level": 3,
+        "reorder_quantity": 9,
+        "location": "QA1",
+        "expiry_date": None,
+        "confirm": True,
+    }
+
+    created_response = client.post("/demo/items", json=create_payload, headers=headers)
+    assert created_response.status_code == 200
+    created = created_response.json()
+    assert created["sku"] == sku
+    assert created["stock_quantity"] == 7
+
+    fetched_response = client.get(f"/demo/items/{created['id']}", headers=headers)
+    assert fetched_response.status_code == 200
+    assert fetched_response.json()["name"] == "CRUD API Test Product"
+
+    update_payload = {**create_payload, "name": "CRUD API Test Product Updated", "stock_quantity": 14}
+    updated_response = client.put(f"/demo/items/{created['id']}", json=update_payload, headers=headers)
+    assert updated_response.status_code == 200
+    updated = updated_response.json()
+    assert updated["name"] == "CRUD API Test Product Updated"
+    assert updated["stock_quantity"] == 14
+
+    listed_response = client.get("/demo/items", params={"search": sku}, headers=headers)
+    assert listed_response.status_code == 200
+    assert any(item["id"] == created["id"] for item in listed_response.json())
+
+    deleted_response = client.delete(f"/demo/items/{created['id']}", params={"confirm": "true"}, headers=headers)
+    assert deleted_response.status_code == 200
+    assert deleted_response.json()["deleted"] is True
+
+    missing_response = client.get(f"/demo/items/{created['id']}", headers=headers)
+    assert missing_response.status_code == 404
+
+
 def test_mcp_metadata_endpoint():
     response = client.get("/mcp/metadata")
     assert response.status_code == 200

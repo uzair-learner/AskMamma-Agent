@@ -23,12 +23,18 @@ interface Product {
   name: string;
   category: string;
   description?: string;
+  supplier_id?: number | null;
   supplier_name?: string;
   stock_quantity: number;
   reorder_level: number;
   reorder_quantity: number;
   price: number;
+  cost?: number;
   location?: string;
+  expiry_date?: string | null;
+  lead_time_days?: number;
+  created_at?: string;
+  updated_at?: string;
 }
 
 interface Supplier {
@@ -79,6 +85,7 @@ const cannedPrompts = [
 
 const navigationItems = [
   { label: "Dashboard", route: "dashboard" },
+  { label: "Inventory Management", route: "inventory" },
   { label: "Products", route: "products" },
   { label: "High Demand", route: "products", params: { filter: "high-demand" } },
   { label: "Forecasts", route: "forecasts" },
@@ -91,8 +98,8 @@ const navigationItems = [
 ];
 
 const rolePermissions = {
-  admin: new Set(["admin:read", "report:write", "reorder:read"]),
-  manager: new Set(["report:write", "reorder:read"]),
+  admin: new Set(["admin:read", "inventory:write", "report:write", "reorder:read"]),
+  manager: new Set(["inventory:write", "report:write", "reorder:read"]),
   analyst: new Set(["reorder:read"]),
   viewer: new Set([]),
 };
@@ -102,6 +109,7 @@ function can(user, permission) {
 }
 
 const dashboardCardConfig = [
+  ["Inventory Management", "inventory", {}, "mint", "Add, edit, delete, search, and inspect inventory records stored in SQLite.", "Manage inventory"],
   ["All Products", "products", {}, "blue", "Browse the full sample catalog, search items, and inspect product details.", "View all products"],
   ["Low Stock", "products", { filter: "low-stock" }, "amber", "Items below their current threshold and likely to need attention soon.", "View low-stock items"],
   ["Out of Stock", "products", { filter: "out-of-stock" }, "coral", "Products currently unavailable in the sample catalog.", "View unavailable items"],
@@ -169,7 +177,8 @@ async function request(path, options = {}) {
     let message = `Request failed with status ${response.status}`;
     try {
       const payload = await response.json();
-      message = payload.detail ?? payload.message ?? message;
+      const detail = payload.detail ?? payload.message;
+      message = typeof detail === "string" ? detail : detail?.message ?? detail?.error_code ?? message;
     } catch {
       // Keep the default request error when the payload is not JSON.
     }
@@ -177,6 +186,50 @@ async function request(path, options = {}) {
   }
 
   return response.json();
+}
+
+function productStatus(product: Product) {
+  if (Number(product.stock_quantity) <= 0) {
+    return "Out of stock";
+  }
+  if (Number(product.stock_quantity) <= Number(product.reorder_level)) {
+    return "Low stock";
+  }
+  return "In stock";
+}
+
+function emptyInventoryForm() {
+  return {
+    id: null,
+    name: "",
+    sku: "",
+    category: "",
+    supplier_id: "",
+    description: "",
+    price: "",
+    stock_quantity: "",
+    reorder_level: "",
+    reorder_quantity: "",
+    location: "",
+    expiry_date: "",
+  };
+}
+
+function productToInventoryForm(product: Product) {
+  return {
+    id: product.id,
+    name: product.name ?? "",
+    sku: product.sku ?? "",
+    category: product.category ?? "",
+    supplier_id: product.supplier_id ? String(product.supplier_id) : "",
+    description: product.description ?? "",
+    price: String(product.price ?? ""),
+    stock_quantity: String(product.stock_quantity ?? ""),
+    reorder_level: String(product.reorder_level ?? ""),
+    reorder_quantity: String(product.reorder_quantity ?? product.reorder_level ?? ""),
+    location: product.location ?? "",
+    expiry_date: product.expiry_date ?? "",
+  };
 }
 
 async function loadDataPart(label, path, fallback) {
@@ -209,6 +262,7 @@ export default function App() {
   const [pageInsightLoading, setPageInsightLoading] = useState(false);
   const [selectedProductId, setSelectedProductId] = useState(null);
   const [productQuery, setProductQuery] = useState("");
+  const [inventoryMessage, setInventoryMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [chatInput, setChatInput] = useState("");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
@@ -422,6 +476,7 @@ export default function App() {
     products.find((item) => item.id === selectedProductId) ??
     visibleProducts[0] ??
     null;
+  const selectedInventoryProduct = products.find((item) => item.id === selectedProductId) ?? products[0] ?? null;
 
   useEffect(() => {
     if (selectedProduct) {
@@ -469,6 +524,93 @@ export default function App() {
       navigateTo("forecasts");
     } catch (forecastError) {
       setError(forecastError.message);
+    }
+  }
+
+  function validateInventoryForm(form) {
+    const errors: Record<string, string> = {};
+    if (!form.name.trim()) {
+      errors.name = "Name is required.";
+    }
+    if (!form.sku.trim()) {
+      errors.sku = "SKU is required.";
+    }
+    const numericFields = [
+      ["stock_quantity", "Quantity on hand"],
+      ["price", "Unit price"],
+      ["reorder_level", "Reorder level"],
+      ["reorder_quantity", "Reorder quantity"],
+    ];
+    numericFields.forEach(([field, label]) => {
+      const value = Number(form[field]);
+      if (form[field] === "" || Number.isNaN(value)) {
+        errors[field] = `${label} must be numeric.`;
+      } else if (value < 0) {
+        errors[field] = `${label} cannot be negative.`;
+      }
+    });
+    return errors;
+  }
+
+  function inventoryPayloadFromForm(form) {
+    const price = Number(form.price);
+    return {
+      sku: form.sku.trim(),
+      name: form.name.trim(),
+      category: form.category.trim() || "Uncategorized",
+      description: form.description.trim(),
+      supplier_id: form.supplier_id ? Number(form.supplier_id) : null,
+      price,
+      cost: price,
+      stock_quantity: Number(form.stock_quantity),
+      reorder_level: Number(form.reorder_level),
+      reorder_quantity: Number(form.reorder_quantity || form.reorder_level || 0),
+      location: form.location.trim() || null,
+      expiry_date: form.expiry_date || null,
+      confirm: true,
+    };
+  }
+
+  async function handleSaveInventoryProduct(form) {
+    setError("");
+    setInventoryMessage(null);
+    try {
+      const payload = inventoryPayloadFromForm(form);
+      const saved = await request(form.id ? `/demo/items/${form.id}` : "/demo/items", {
+        method: form.id ? "PUT" : "POST",
+        body: JSON.stringify(payload),
+      });
+      setSelectedProductId(saved.id);
+      await loadAllData();
+      setInventoryMessage({ type: "success", text: `${saved.name} was ${form.id ? "updated" : "added"} successfully.` });
+      return saved;
+    } catch (saveError) {
+      console.error("Inventory save failed", saveError);
+      const message = saveError instanceof Error ? saveError.message : "Inventory record could not be saved.";
+      setInventoryMessage({ type: "error", text: message });
+      throw saveError;
+    }
+  }
+
+  async function handleDeleteInventoryProduct(product) {
+    if (!product) {
+      return;
+    }
+    const confirmed = window.confirm(`Delete ${product.name}? This will remove the inventory record from SQLite.`);
+    if (!confirmed) {
+      return;
+    }
+    setError("");
+    setInventoryMessage(null);
+    try {
+      await request(`/demo/items/${product.id}?confirm=true`, { method: "DELETE" });
+      await loadAllData();
+      setSelectedProductId((current) => (current === product.id ? null : current));
+      setInventoryMessage({ type: "success", text: `${product.name} was deleted successfully.` });
+    } catch (deleteError) {
+      console.error("Inventory delete failed", deleteError);
+      const message = deleteError instanceof Error ? deleteError.message : "Inventory record could not be deleted.";
+      setInventoryMessage({ type: "error", text: message });
     }
   }
 
@@ -545,6 +687,7 @@ export default function App() {
         "Inventory Pilot AI Assistant": productCounts.ask,
         "AI Architecture": productCounts.architecture,
         "Admin / Traces": productCounts.admin,
+        "Inventory Management": productCounts.all,
       }[card.title] ?? "--",
   }));
 
@@ -635,6 +778,22 @@ export default function App() {
             highDemandProducts={highDemandProducts}
             insight={pageInsight}
             loading={pageInsightLoading}
+          />
+        ) : null}
+        {routeState.route === "inventory" ? (
+          <InventoryManagementPage
+            products={products}
+            suppliers={suppliers}
+            selectedProduct={selectedInventoryProduct}
+            setSelectedProductId={setSelectedProductId}
+            onSave={handleSaveInventoryProduct}
+            onDelete={handleDeleteInventoryProduct}
+            onRefresh={refreshAll}
+            isRefreshing={isRefreshing}
+            canWrite={can(currentUser, "inventory:write")}
+            message={inventoryMessage}
+            clearMessage={() => setInventoryMessage(null)}
+            validateForm={validateInventoryForm}
           />
         ) : null}
         {routeState.route === "products" ? (
@@ -868,6 +1027,281 @@ function DashboardPage({ cards, dashboard, forecastAlerts, highDemandProducts, i
         </div>
       </section>
     </div>
+  );
+}
+
+function InventoryManagementPage({
+  products,
+  suppliers,
+  selectedProduct,
+  setSelectedProductId,
+  onSave,
+  onDelete,
+  onRefresh,
+  isRefreshing,
+  canWrite,
+  message,
+  clearMessage,
+  validateForm,
+}) {
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [form, setForm] = useState(emptyInventoryForm);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [isSaving, setIsSaving] = useState(false);
+
+  const filteredProducts = useMemo(() => {
+    const search = query.trim().toLowerCase();
+    return products.filter((product) => {
+      const status = productStatus(product);
+      const statusMatches =
+        statusFilter === "all" ||
+        (statusFilter === "in-stock" && status === "In stock") ||
+        (statusFilter === "low-stock" && status === "Low stock") ||
+        (statusFilter === "out-of-stock" && status === "Out of stock");
+      if (!statusMatches) {
+        return false;
+      }
+      if (!search) {
+        return true;
+      }
+      return [product.name, product.sku, product.category, product.supplier_name, status]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(search));
+    });
+  }, [products, query, statusFilter]);
+
+  const editingProduct = form.id ? products.find((product) => product.id === form.id) : null;
+
+  function updateForm(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+    setFormErrors((current) => {
+      const next = { ...current };
+      delete next[field];
+      return next;
+    });
+  }
+
+  function startAdd() {
+    setForm(emptyInventoryForm());
+    setFormErrors({});
+    clearMessage();
+  }
+
+  function startEdit(product) {
+    setSelectedProductId(product.id);
+    setForm(productToInventoryForm(product));
+    setFormErrors({});
+    clearMessage();
+  }
+
+  async function submitForm(event) {
+    event.preventDefault();
+    const nextErrors = validateForm(form);
+    setFormErrors(nextErrors);
+    if (Object.keys(nextErrors).length) {
+      return;
+    }
+    setIsSaving(true);
+    try {
+      const saved = await onSave(form);
+      setForm(productToInventoryForm(saved));
+    } catch {
+      // The parent records a user-friendly page message and logs the technical error.
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
+  return (
+    <div className="page-grid">
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <p className="section-label">Inventory Management</p>
+            <h3>Add, edit, delete, and search records</h3>
+          </div>
+          <div className="toolbar-actions">
+            <button className="secondary-button" onClick={onRefresh} disabled={isRefreshing}>
+              {isRefreshing ? "Refreshing..." : "Refresh"}
+            </button>
+            <button className="primary-button" onClick={startAdd} disabled={!canWrite}>
+              Add product
+            </button>
+          </div>
+        </div>
+        <DataSourceBadge text="Inventory records are stored in the local SQLite database" />
+        {message ? (
+          <div className={message.type === "success" ? "info-banner message-banner" : "error-banner message-banner"}>
+            <span>{message.text}</span>
+            <button className="inline-link" onClick={clearMessage}>Clear</button>
+          </div>
+        ) : null}
+        {!canWrite ? <div className="info-banner">Your role can view inventory records, but cannot change them.</div> : null}
+        <div className="inventory-layout">
+          <div className="inventory-list-area">
+            <div className="table-toolbar inventory-toolbar">
+              <input
+                className="search-input"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search name, SKU, category, supplier, or stock status..."
+              />
+              <select className="form-input compact-select" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+                <option value="all">All stock statuses</option>
+                <option value="in-stock">In stock</option>
+                <option value="low-stock">Low stock</option>
+                <option value="out-of-stock">Out of stock</option>
+              </select>
+            </div>
+            <div className="table-card">
+              <div className="table-toolbar">
+                <span>{filteredProducts.length} records shown</span>
+                <span>{products.length} total records</span>
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Product</th>
+                      <th>SKU</th>
+                      <th>Category</th>
+                      <th>Supplier</th>
+                      <th>Status</th>
+                      <th>Qty</th>
+                      <th>Price</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredProducts.map((product) => (
+                      <tr key={product.id} className={selectedProduct?.id === product.id ? "selected-row" : ""} onClick={() => setSelectedProductId(product.id)}>
+                        <td><strong>{product.name}</strong></td>
+                        <td>{product.sku}</td>
+                        <td>{product.category}</td>
+                        <td>{product.supplier_name ?? "Unassigned"}</td>
+                        <td><span className={`stock-badge stock-${productStatus(product).toLowerCase().replace(/\s+/g, "-")}`}>{productStatus(product)}</span></td>
+                        <td>{formatter.format(product.stock_quantity)}</td>
+                        <td>{currencyFormatter.format(product.price)}</td>
+                        <td>
+                          <div className="row-actions">
+                            <button className="inline-link" onClick={(event) => { event.stopPropagation(); startEdit(product); }} disabled={!canWrite}>
+                              Edit
+                            </button>
+                            <button className="inline-link danger-link" onClick={(event) => { event.stopPropagation(); onDelete(product); }} disabled={!canWrite}>
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {!filteredProducts.length ? <div className="empty-state">No inventory records match the current search or status filter.</div> : null}
+              </div>
+            </div>
+          </div>
+
+          <aside className="detail-card">
+            <div className="section-label">Details</div>
+            {selectedProduct ? (
+              <>
+                <h3>{selectedProduct.name}</h3>
+                <p>{selectedProduct.description || "No description provided."}</p>
+                <dl className="detail-grid">
+                  <Detail label="Internal ID" value={selectedProduct.id} />
+                  <Detail label="SKU" value={selectedProduct.sku} />
+                  <Detail label="Category" value={selectedProduct.category} />
+                  <Detail label="Supplier" value={selectedProduct.supplier_name ?? "Unassigned"} />
+                  <Detail label="Lead Time" value={selectedProduct.lead_time_days ? `${selectedProduct.lead_time_days} days` : "N/A"} />
+                  <Detail label="Status" value={productStatus(selectedProduct)} />
+                  <Detail label="Quantity" value={formatter.format(selectedProduct.stock_quantity)} />
+                  <Detail label="Reorder Level" value={formatter.format(selectedProduct.reorder_level)} />
+                  <Detail label="Unit Price" value={currencyFormatter.format(selectedProduct.price)} />
+                  <Detail label="Created" value={formatGeneratedAt(selectedProduct.created_at)} />
+                  <Detail label="Updated" value={formatGeneratedAt(selectedProduct.updated_at)} />
+                </dl>
+                {canWrite ? (
+                  <div className="toolbar-actions">
+                    <button className="secondary-button" onClick={() => startEdit(selectedProduct)}>Edit selected</button>
+                    <button className="ghost-button danger-button" onClick={() => onDelete(selectedProduct)}>Delete selected</button>
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <div className="empty-state">Select a record to view details.</div>
+            )}
+          </aside>
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <p className="section-label">{form.id ? "Edit Product" : "Add Product"}</p>
+            <h3>{editingProduct ? editingProduct.name : "Inventory record"}</h3>
+          </div>
+        </div>
+        <form className="inventory-form" onSubmit={submitForm}>
+          <Field label="Name" error={formErrors.name}>
+            <input className="form-input" value={form.name} onChange={(event) => updateForm("name", event.target.value)} disabled={!canWrite} />
+          </Field>
+          <Field label="SKU" error={formErrors.sku}>
+            <input className="form-input" value={form.sku} onChange={(event) => updateForm("sku", event.target.value)} disabled={!canWrite} />
+          </Field>
+          <Field label="Category">
+            <input className="form-input" value={form.category} onChange={(event) => updateForm("category", event.target.value)} disabled={!canWrite} />
+          </Field>
+          <Field label="Supplier">
+            <select className="form-input" value={form.supplier_id} onChange={(event) => updateForm("supplier_id", event.target.value)} disabled={!canWrite}>
+              <option value="">Unassigned</option>
+              {suppliers.map((supplier) => (
+                <option key={supplier.id} value={supplier.id}>{supplier.name}</option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Unit Price" error={formErrors.price}>
+            <input className="form-input" type="number" min="0" step="0.01" value={form.price} onChange={(event) => updateForm("price", event.target.value)} disabled={!canWrite} />
+          </Field>
+          <Field label="Quantity On Hand" error={formErrors.stock_quantity}>
+            <input className="form-input" type="number" min="0" step="1" value={form.stock_quantity} onChange={(event) => updateForm("stock_quantity", event.target.value)} disabled={!canWrite} />
+          </Field>
+          <Field label="Reorder Level" error={formErrors.reorder_level}>
+            <input className="form-input" type="number" min="0" step="1" value={form.reorder_level} onChange={(event) => updateForm("reorder_level", event.target.value)} disabled={!canWrite} />
+          </Field>
+          <Field label="Reorder Quantity" error={formErrors.reorder_quantity}>
+            <input className="form-input" type="number" min="0" step="1" value={form.reorder_quantity} onChange={(event) => updateForm("reorder_quantity", event.target.value)} disabled={!canWrite} />
+          </Field>
+          <Field label="Location">
+            <input className="form-input" value={form.location} onChange={(event) => updateForm("location", event.target.value)} disabled={!canWrite} />
+          </Field>
+          <Field label="Expiry Date">
+            <input className="form-input" type="date" value={form.expiry_date} onChange={(event) => updateForm("expiry_date", event.target.value)} disabled={!canWrite} />
+          </Field>
+          <Field label="Description">
+            <textarea className="form-input form-textarea" value={form.description} onChange={(event) => updateForm("description", event.target.value)} disabled={!canWrite} />
+          </Field>
+          <div className="form-actions">
+            <button className="secondary-button" type="button" onClick={startAdd}>
+              Clear form
+            </button>
+            <button className="primary-button" type="submit" disabled={!canWrite || isSaving}>
+              {isSaving ? "Saving..." : form.id ? "Update product" : "Add product"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+  );
+}
+
+function Field({ label, error, children }) {
+  return (
+    <label className="form-field">
+      <span>{label}</span>
+      {children}
+      {error ? <strong className="field-error">{error}</strong> : null}
+    </label>
   );
 }
 
@@ -1395,6 +1829,7 @@ function Detail({ label, value }) {
 function pageTitle(routeState) {
   return {
     dashboard: "Dashboard",
+    inventory: "Inventory Management",
     products: routeState.params.filter === "high-demand" ? "High Demand Products" : "Products",
     forecasts: "Forecast Alerts",
     reorder: "Reorder Recommendations",

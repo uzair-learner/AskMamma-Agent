@@ -25,7 +25,8 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -504,7 +505,8 @@ button {
 }
 
 .search-input,
-.composer textarea {
+.composer textarea,
+.form-input {
   width: 100%;
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.1);
@@ -521,6 +523,28 @@ button {
   display: grid;
   grid-template-columns: minmax(0, 1.3fr) minmax(300px, 0.7fr);
   gap: 18px;
+}
+
+.inventory-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.65fr);
+  gap: 18px;
+}
+
+.inventory-list-area {
+  min-width: 0;
+}
+
+.inventory-toolbar {
+  align-items: center;
+  flex-wrap: wrap;
+  padding-left: 0;
+  padding-right: 0;
+  border-bottom: 0;
+}
+
+.compact-select {
+  width: min(240px, 100%);
 }
 
 .table-card,
@@ -593,6 +617,96 @@ tbody tr:hover,
   gap: 16px;
   display: flex;
   flex-direction: column;
+}
+
+.inventory-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.form-field {
+  display: grid;
+  gap: 8px;
+  color: #dbe8f3;
+}
+
+.form-field span {
+  color: #91a7b8;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.form-input {
+  min-height: 52px;
+  padding: 13px 15px;
+}
+
+.form-textarea {
+  min-height: 112px;
+  resize: vertical;
+}
+
+.field-error {
+  color: #ffb9ac;
+  font-size: 0.86rem;
+}
+
+.form-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.message-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+}
+
+.stock-badge {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+  border-radius: 999px;
+  padding: 7px 10px;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.stock-in-stock {
+  color: #9df7c9;
+  background: rgba(61, 190, 130, 0.16);
+}
+
+.stock-low-stock {
+  color: #ffd27d;
+  background: rgba(255, 180, 73, 0.16);
+}
+
+.stock-out-of-stock {
+  color: #ffb6a8;
+  background: rgba(255, 117, 93, 0.18);
+}
+
+.row-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.danger-link {
+  color: #ffb6a8;
+}
+
+.danger-button {
+  color: #ffd8d1;
+  border-color: rgba(255, 138, 112, 0.28);
 }
 
 .detail-grid {
@@ -771,7 +885,9 @@ tbody tr:hover,
   .admin-summary-grid,
   .split-panel,
   .hero-card,
-  .table-layout {
+  .table-layout,
+  .inventory-layout,
+  .inventory-form {
     grid-template-columns: 1fr;
   }
 }
